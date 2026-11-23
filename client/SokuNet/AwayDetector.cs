@@ -11,40 +11,42 @@ internal sealed class KeyboardActivityTracker
 
     public bool PollForNewKeyDown(
         bool gameForeground,
+        bool commandWindowFocused,
         out bool sPressed,
-        out bool pPressed,
-        out bool qPressed,
-        out bool escapePressed)
+        out bool pPressed)
     {
-        bool anyNewKeyDown = false;
+        bool gameKeyboardInput = false;
         sPressed = false;
         pPressed = false;
-        qPressed = false;
-        escapePressed = false;
 
-        // Only key-down edges are observed. Mouse buttons and key contents are not stored.
+        // Only key-down edges are inspected. The pressed key and its contents are
+        // never stored or transmitted; S/P are commands only while CMD is focused.
         for (int virtualKey = 1; virtualKey < VirtualKeyCount; virtualKey++)
         {
             if (virtualKey is 0x01 or 0x02 or 0x04 or 0x05 or 0x06 or 0xE7)
                 continue;
 
             bool isDown = (KeyboardNativeMethods.GetAsyncKeyState(virtualKey) & KeyDownMask) != 0;
-            bool pressed = gameForeground && isDown && !_previousDown[virtualKey];
+            bool pressed = isDown && !_previousDown[virtualKey];
             if (pressed)
             {
-                anyNewKeyDown = true;
-                switch (virtualKey)
+                if (gameForeground)
+                    gameKeyboardInput = true;
+
+                if (commandWindowFocused)
                 {
-                    case 0x53: sPressed = true; break;
-                    case 0x50: pPressed = true; break;
-                    case 0x51: qPressed = true; break;
-                    case 0x1B: escapePressed = true; break;
+                    switch (virtualKey)
+                    {
+                        case 0x53: sPressed = true; break;
+                        case 0x50: pPressed = true; break;
+                    }
                 }
             }
+
             _previousDown[virtualKey] = isDown;
         }
 
-        return anyNewKeyDown;
+        return gameKeyboardInput;
     }
 }
 

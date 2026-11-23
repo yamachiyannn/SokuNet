@@ -12,11 +12,18 @@ internal readonly record struct LocalPresence(
     bool IsAway,
     bool IsPrivate);
 
-internal sealed record RemoteNotification(string PlayerName, string StateText);
+internal sealed record FriendPresence(
+    string PlayerId,
+    string DisplayName,
+    string GameStatus,
+    bool IsAway,
+    bool IsPrivate);
+
+internal sealed record RemoteNotification(string Message);
 
 /// <summary>
-/// Small reconnecting WebSocket client. The Cloudflare Durable Object is the room
-/// coordinator/relay; the first connected member is labelled host and later members client.
+/// WebSocket relay client. The first connection is labelled host by the relay;
+/// Cloudflare, not the host PC, carries the network traffic.
 /// </summary>
 internal sealed class NetworkService : IDisposable
 {
@@ -32,6 +39,7 @@ internal sealed class NetworkService : IDisposable
     private readonly CancellationToken _shutdownToken;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly ConcurrentQueue<RemoteNotification> _notifications = new();
+    private readonly ConcurrentDictionary<string, FriendPresence> _friends = new(StringComparer.Ordinal);
     private readonly object _presenceLock = new();
     private LocalPresence _currentPresence;
     private bool _hasPresence;
@@ -43,12 +51,12 @@ internal sealed class NetworkService : IDisposable
     public string ConnectionStatus => Volatile.Read(ref _connectionStatus);
     public string RoleText => Volatile.Read(ref _roleText);
 
-    public NetworkService(AppSettings settings)
+    public NetworkService(AppSettings settings, LocalPresence initialPresence)
     {
         _shutdownToken = _shutdown.Token;
         _roomCode = settings.RoomCode?.Trim() ?? string.Empty;
         _displayName = CleanText(settings.DisplayName, 24);
-        _currentPresence = new LocalPresence(_displayName, "未起動", false, settings.PrivateMode);
+        _currentPresence = initialPresence with { DisplayName = _displayName };
         _hasPresence = true;
 
         if (!string.IsNullOrWhiteSpace(settings.RelayUrl) && IsSafeRoomCode(_roomCode) && _displayName.Length > 0)
@@ -70,17 +78,23 @@ internal sealed class NetworkService : IDisposable
         }
     }
 
+    public IReadOnlyCollection<FriendPresence> GetFriends() => _friends.Values
+        .OrderBy(friend => friend.DisplayName, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
     private static bool IsSafeRoomCode(string value) =>
-        value.Length >= 16 && value.All(c =>
-            (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c is '-' or '_');
+        value.Length >= 16 && value.All(character =>
+            (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || character is '-' or '_');
 
     public void UpdatePresence(LocalPresence presence)
     {
         bool changed;
         lock (_presenceLock)
         {
-            changed = !_hasPresence || _currentPresence != presence;
+            changed = !_hasPresence ||
+                      _currentPresence.IsPrivate != presence.IsPrivate ||
+                      (!presence.IsPrivate && _currentPresence != presence);
             _currentPresence = presence;
             _hasPresence = true;
         }
@@ -116,13 +130,14 @@ internal sealed class NetworkService : IDisposable
             }
             catch (Exception)
             {
-                // Network failure is non-fatal: local game detection continues and reconnects.
+                // Network failure is non-fatal: local detection and the CMD UI continue.
             }
             finally
             {
                 if (ReferenceEquals(_socket, socket))
                     _socket = null;
                 Volatile.Write(ref _roleText, "未接続");
+                _friends.Clear();
                 if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                 {
                     try { socket.Abort(); } catch { }
@@ -157,10 +172,17 @@ internal sealed class NetworkService : IDisposable
             presence = _currentPresence;
         }
 
+        // Even private participants identify themselves to their invited group so
+        // that friends can show the row as "非公開". No game state is sent.
         object message;
         if (presence.IsPrivate)
         {
-            message = new ClientMessage { Type = isInitial ? "hello" : "hide", IsPrivate = true };
+            message = new ClientMessage
+            {
+                Type = isInitial ? "hello" : "hide",
+                DisplayName = _displayName,
+                IsPrivate = true
+            };
         }
         else
         {
@@ -253,29 +275,29 @@ internal sealed class NetworkService : IDisposable
             switch (type)
             {
                 case "welcome":
+                    UpdateRole(root);
+                    ReplaceFriendSnapshot(root);
+                    break;
+
                 case "role":
-                    if (root.TryGetProperty("role", out JsonElement role))
-                    {
-                        string roleValue = role.GetString() ?? "";
-                        Volatile.Write(ref _roleText, roleValue switch
-                        {
-                            "host" => "ホスト",
-                            "client" => "クライアント",
-                            _ => "未接続"
-                        });
-                    }
+                    UpdateRole(root);
                     break;
 
                 case "peer_joined":
-                    EnqueuePeerEvent(root, "オンライン");
+                    UpsertFriend(root, notify: false);
                     break;
 
                 case "peer_state":
-                    EnqueuePeerEvent(root, null);
+                    UpsertFriend(root, notify: true);
+                    break;
+
+                case "peer_private":
+                    UpsertFriend(root, notify: false);
                     break;
 
                 case "peer_left":
-                    EnqueuePeerEvent(root, "オフライン");
+                    if (root.TryGetProperty("playerId", out JsonElement leftId))
+                        _friends.TryRemove(leftId.GetString() ?? string.Empty, out _);
                     break;
 
                 case "error":
@@ -289,35 +311,90 @@ internal sealed class NetworkService : IDisposable
         }
     }
 
-    private void EnqueuePeerEvent(JsonElement root, string? suffix)
+    private void UpdateRole(JsonElement root)
     {
-        string name = root.TryGetProperty("displayName", out JsonElement nameElement)
-            ? CleanText(nameElement.GetString(), 24)
-            : "参加者";
+        if (!root.TryGetProperty("role", out JsonElement role))
+            return;
+
+        string roleValue = role.GetString() ?? string.Empty;
+        Volatile.Write(ref _roleText, roleValue switch
+        {
+            "host" => "ホスト",
+            "client" => "クライアント",
+            _ => "未接続"
+        });
+    }
+
+    private void ReplaceFriendSnapshot(JsonElement root)
+    {
+        _friends.Clear();
+        if (!root.TryGetProperty("peers", out JsonElement peers) || peers.ValueKind != JsonValueKind.Array)
+            return;
+
+        foreach (JsonElement peer in peers.EnumerateArray())
+            UpsertFriend(peer, notify: false);
+    }
+
+    private void UpsertFriend(JsonElement root, bool notify)
+    {
+        string playerId = ReadString(root, "playerId", 80);
+        if (playerId.Length == 0)
+            return;
+
+        string name = ReadString(root, "displayName", 24);
         if (name.Length == 0)
             name = "参加者";
+        bool isPrivate = root.TryGetProperty("isPrivate", out JsonElement privateElement) &&
+                         privateElement.ValueKind == JsonValueKind.True;
+        string status = isPrivate ? string.Empty : ReadString(root, "gameStatus", 24);
+        bool isAway = !isPrivate && root.TryGetProperty("isAway", out JsonElement awayElement) &&
+                      awayElement.ValueKind == JsonValueKind.True;
 
-        string status = root.TryGetProperty("gameStatus", out JsonElement statusElement)
-            ? CleanText(statusElement.GetString(), 24)
-            : string.Empty;
-        bool away = root.TryGetProperty("isAway", out JsonElement awayElement) && awayElement.ValueKind == JsonValueKind.True;
+        var next = new FriendPresence(playerId, name, status, isAway, isPrivate);
+        _friends.TryGetValue(playerId, out FriendPresence? previous);
+        _friends[playerId] = next;
 
-        string stateText = suffix ?? status;
-        if (suffix == "オンライン" && status.Length > 0)
-            stateText = $"オンライン・{status}";
-        if (away && suffix != "オフライン")
-            stateText += "・離席中";
-        if (stateText.Length == 0)
-            stateText = "状態が更新されました";
+        if (!notify || previous is null || next.IsPrivate || previous.IsPrivate)
+            return;
 
-        _notifications.Enqueue(new RemoteNotification(name, stateText));
+        if (previous.GameStatus == "未起動" && next.GameStatus != "未起動")
+        {
+            string startedState = next.GameStatus == "取得不可" ? "状態取得中" : FormatState(next);
+            _notifications.Enqueue(new RemoteNotification($"{name} が東方非想天則を始めました（{startedState}）"));
+        }
+        else if (next.GameStatus == "未起動" &&
+                 previous.GameStatus is not ("未起動" or "取得不可"))
+        {
+            _notifications.Enqueue(new RemoteNotification($"{name}：天則を終了しました"));
+        }
+        else if (previous.GameStatus != "取得不可" && previous.GameStatus != next.GameStatus)
+        {
+            _notifications.Enqueue(new RemoteNotification($"{name}：{FormatState(next)}"));
+        }
+        else if (previous.IsAway != next.IsAway)
+        {
+            _notifications.Enqueue(new RemoteNotification(next.IsAway
+                ? $"{name}：離席中になりました"
+                : $"{name}：戻りました"));
+        }
+    }
+
+    private static string FormatState(FriendPresence friend) => friend.IsAway
+        ? "離席中"
+        : string.IsNullOrWhiteSpace(friend.GameStatus) ? "状態取得中" : friend.GameStatus;
+
+    private static string ReadString(JsonElement root, string propertyName, int maxLength)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement element) || element.ValueKind != JsonValueKind.String)
+            return string.Empty;
+        return CleanText(element.GetString(), maxLength);
     }
 
     private static string CleanText(string? value, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))
             return string.Empty;
-        string cleaned = new(value.Where(c => !char.IsControl(c)).ToArray());
+        string cleaned = new(value.Where(character => !char.IsControl(character)).ToArray());
         return cleaned.Length <= maxLength ? cleaned : cleaned[..maxLength];
     }
 
@@ -353,7 +430,6 @@ internal sealed class NetworkService : IDisposable
         _shutdown.Cancel();
         try { _socket?.Abort(); } catch { }
         _socket?.Dispose();
-        // The shutdown token remains valid for the short-lived background task to unwind safely.
     }
 
     private sealed class ClientMessage

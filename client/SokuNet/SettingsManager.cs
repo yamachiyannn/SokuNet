@@ -5,6 +5,8 @@ namespace SokuNet;
 internal sealed class AppSettings
 {
     public bool PrivateMode { get; set; }
+    public bool NotificationSoundEnabled { get; set; } = true;
+    public bool StartWithWindows { get; set; }
     public int AwayTimeoutMinutes { get; set; } = 5;
     public string DisplayName { get; set; } = "プレイヤー";
     public string RelayUrl { get; set; } = string.Empty;
@@ -19,16 +21,14 @@ internal sealed class SettingsManager : IDisposable
         PropertyNameCaseInsensitive = true
     };
 
-    public string ConfigPath { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "SokuNet",
-        "config.json");
+    // Keep the file beside sokunet.exe so it can be found and edited in Explorer.
+    public string ConfigPath { get; } = Path.Combine(AppContext.BaseDirectory, "config.json");
+    public string AppDirectory => AppContext.BaseDirectory;
 
     public AppSettings Load()
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
             if (!File.Exists(ConfigPath))
             {
                 var defaults = new AppSettings();
@@ -46,9 +46,7 @@ internal sealed class SettingsManager : IDisposable
         }
         catch (JsonException)
         {
-            var defaults = new AppSettings();
-            try { Save(defaults); } catch { }
-            return defaults;
+            return new AppSettings();
         }
         catch (IOException)
         {
@@ -62,7 +60,6 @@ internal sealed class SettingsManager : IDisposable
 
     public void Save(AppSettings settings)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
         string temporaryPath = ConfigPath + ".tmp";
         string json = JsonSerializer.Serialize(settings, JsonOptions);
         File.WriteAllText(temporaryPath, json);
@@ -73,7 +70,7 @@ internal sealed class SettingsManager : IDisposable
     {
         if (string.IsNullOrWhiteSpace(value))
             return fallback;
-        string clean = new(value.Where(c => !char.IsControl(c)).ToArray());
+        string clean = new(value.Where(character => !char.IsControl(character)).ToArray());
         return clean.Length <= maxLength ? clean : clean[..maxLength];
     }
 

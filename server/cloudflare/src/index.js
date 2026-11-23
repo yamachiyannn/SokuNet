@@ -24,8 +24,7 @@ export default {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    // This deployment contains one private friend group. Add another named room only
-    // if separate groups are needed in a later version.
+    // This first release uses one invite-only room for the user's friend group.
     const id = env.SOKUNET_ROOM.idFromName("sokunet-friends-v1");
     return env.SOKUNET_ROOM.get(id).fetch(request);
   },
@@ -48,7 +47,7 @@ export class SokuNetRoom extends DurableObject {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const attachment = {
-      clientId: crypto.randomUUID(),
+      playerId: crypto.randomUUID(),
       joinedAt: Date.now(),
       displayName: "",
       gameStatus: "",
@@ -83,16 +82,15 @@ export class SokuNetRoom extends DurableObject {
     }
 
     if (message.type === "hello") {
-      const oldVisible = !attachment.isPrivate && attachment.displayName.length > 0;
-      const previousState = attachment.gameStatus;
       applyPresence(attachment, message);
       ws.serializeAttachment(attachment);
 
-      const peers = this.visibleSessions(ws).map(({ attachment: peer }) => publicPresence(peer));
       const entries = this.sessionEntries();
+      const peers = entries
+        .filter((entry) => entry.ws !== ws && entry.attachment.displayName)
+        .map((entry) => publicPresence(entry.attachment));
       const own = entries.find((entry) => entry.ws === ws);
       if (own) {
-        own.attachment = attachment;
         const role = this.calculateRole(entries, ws);
         attachment.role = role;
         ws.serializeAttachment(attachment);
@@ -100,38 +98,38 @@ export class SokuNetRoom extends DurableObject {
       }
 
       this.updateRoles();
-      if (!oldVisible && !attachment.isPrivate && attachment.displayName) {
-        this.broadcast({ type: "peer_joined", ...publicPresence(attachment) }, ws);
-      } else if (oldVisible && !attachment.isPrivate && previousState !== attachment.gameStatus) {
-        this.broadcast({ type: "peer_state", ...publicPresence(attachment) }, ws);
+      if (attachment.displayName) {
+        if (attachment.isPrivate) {
+          this.broadcast({ type: "peer_private", ...publicPresence(attachment) }, ws);
+        } else {
+          this.broadcast({ type: "peer_joined", ...publicPresence(attachment) }, ws);
+        }
       }
       return;
     }
 
     if (message.type === "hide") {
-      const wasVisible = !attachment.isPrivate && attachment.displayName.length > 0;
+      attachment.displayName = cleanText(message.displayName, 24) || attachment.displayName || "プレイヤー";
       attachment.isPrivate = true;
-      attachment.displayName = "";
       attachment.gameStatus = "";
       attachment.isAway = false;
       ws.serializeAttachment(attachment);
-      if (wasVisible) this.broadcast({ type: "peer_left", displayName: "参加者" }, ws);
+      this.broadcast({ type: "peer_private", ...publicPresence(attachment) }, ws);
       return;
     }
 
     if (message.type === "presence") {
-      const wasVisible = !attachment.isPrivate && attachment.displayName.length > 0;
+      const wasPrivate = attachment.isPrivate;
       const oldState = attachment.gameStatus;
       const oldAway = attachment.isAway;
       applyPresence(attachment, message);
       ws.serializeAttachment(attachment);
-      const isVisible = !attachment.isPrivate && attachment.displayName.length > 0;
 
-      if (wasVisible && !isVisible) {
-        this.broadcast({ type: "peer_left", displayName: "参加者" }, ws);
-      } else if (!wasVisible && isVisible) {
+      if (attachment.isPrivate) {
+        this.broadcast({ type: "peer_private", ...publicPresence(attachment) }, ws);
+      } else if (wasPrivate) {
         this.broadcast({ type: "peer_joined", ...publicPresence(attachment) }, ws);
-      } else if (wasVisible && isVisible && (oldState !== attachment.gameStatus || oldAway !== attachment.isAway)) {
+      } else if (oldState !== attachment.gameStatus || oldAway !== attachment.isAway) {
         this.broadcast({ type: "peer_state", ...publicPresence(attachment) }, ws);
       }
       return;
@@ -142,19 +140,25 @@ export class SokuNetRoom extends DurableObject {
 
   async webSocketClose(ws, code, reason) {
     const attachment = ws.deserializeAttachment();
-    if (attachment && !attachment.isPrivate && attachment.displayName) {
-      this.broadcast({ type: "peer_left", displayName: attachment.displayName }, ws);
+    if (attachment?.playerId) {
+      this.broadcast({
+        type: "peer_left",
+        playerId: attachment.playerId,
+        displayName: attachment.displayName || "参加者",
+      }, ws);
     }
-    // Compatibility dates on/after 2026-04-07 auto-acknowledge close frames;
-    // calling close is harmless and keeps this robust on older compatibility dates.
     try { ws.close(code, reason); } catch { }
     this.updateRoles(ws);
   }
 
   async webSocketError(ws) {
     const attachment = ws.deserializeAttachment();
-    if (attachment && !attachment.isPrivate && attachment.displayName) {
-      this.broadcast({ type: "peer_left", displayName: attachment.displayName }, ws);
+    if (attachment?.playerId) {
+      this.broadcast({
+        type: "peer_left",
+        playerId: attachment.playerId,
+        displayName: attachment.displayName || "参加者",
+      }, ws);
     }
     this.updateRoles(ws);
   }
@@ -164,11 +168,6 @@ export class SokuNetRoom extends DurableObject {
       .filter((ws) => ws !== excluded)
       .map((ws) => ({ ws, attachment: ws.deserializeAttachment() ?? {} }))
       .sort((a, b) => (a.attachment.joinedAt ?? 0) - (b.attachment.joinedAt ?? 0));
-  }
-
-  visibleSessions(excluded = null) {
-    return this.sessionEntries(excluded).filter(({ attachment }) =>
-      !attachment.isPrivate && attachment.displayName);
   }
 
   calculateRole(entries, target) {
@@ -187,25 +186,27 @@ export class SokuNetRoom extends DurableObject {
     });
   }
 
+  // Private participants still receive the roster and notifications from friends.
   broadcast(message, excluded = null) {
     const payload = JSON.stringify(message);
-    for (const { ws } of this.visibleSessions(excluded)) {
+    for (const { ws } of this.sessionEntries(excluded)) {
       try { ws.send(payload); } catch { }
     }
   }
 }
 
 function applyPresence(attachment, message) {
+  attachment.displayName = cleanText(message.displayName, 24) || attachment.displayName || "プレイヤー";
   const privateMode = message.isPrivate === true;
   attachment.isPrivate = privateMode;
   if (privateMode) {
-    attachment.displayName = "";
+    // Keep only the participant's chosen display name and the privacy flag.
+    // No game state, away state, or scene information is retained or relayed.
     attachment.gameStatus = "";
     attachment.isAway = false;
     return;
   }
 
-  attachment.displayName = cleanText(message.displayName, 24) || "プレイヤー";
   const state = cleanText(message.gameStatus, 24);
   attachment.gameStatus = ALLOWED_GAME_STATES.has(state) ? state : "取得不可";
   attachment.isAway = message.isAway === true;
@@ -218,10 +219,16 @@ function cleanText(value, maxLength) {
 }
 
 function publicPresence(attachment) {
+  const common = {
+    playerId: attachment.playerId,
+    displayName: attachment.displayName || "参加者",
+    isPrivate: attachment.isPrivate === true,
+  };
+  if (common.isPrivate) return common;
   return {
-    displayName: attachment.displayName,
-    gameStatus: attachment.gameStatus,
-    isAway: attachment.isAway,
+    ...common,
+    gameStatus: attachment.gameStatus || "未起動",
+    isAway: attachment.isAway === true,
   };
 }
 
