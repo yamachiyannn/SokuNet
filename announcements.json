@@ -1,3 +1,9 @@
 {
-  "announcements": []
+  "announcements": [
+    {
+      "id": "20261123-001",
+      "title": "テスト",
+      "message": "通知テスト"
+    }
+  ]
 }
