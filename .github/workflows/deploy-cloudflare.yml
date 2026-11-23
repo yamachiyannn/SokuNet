@@ -1,0 +1,43 @@
+name: Deploy SokuNet relay
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - "server/cloudflare/**"
+      - ".github/workflows/deploy-cloudflare.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate the shared room secret
+        shell: bash
+        run: |
+          if [[ -z "$SOKUNET_ROOM_SECRET" || ${#SOKUNET_ROOM_SECRET} -lt 16 || ! "$SOKUNET_ROOM_SECRET" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            echo "::error::SOKUNET_ROOM_SECRET must be at least 16 ASCII letters, digits, hyphens, or underscores."
+            exit 1
+          fi
+        env:
+          SOKUNET_ROOM_SECRET: ${{ secrets.SOKUNET_ROOM_SECRET }}
+
+      - name: Deploy Worker and apply private room secret
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4"
+          workingDirectory: "server/cloudflare"
+          command: deploy
+          postCommands: |
+            printf '%s' "$SOKUNET_ROOM_SECRET" | npx wrangler secret put SOKUNET_ROOM_SECRET
+        env:
+          SOKUNET_ROOM_SECRET: ${{ secrets.SOKUNET_ROOM_SECRET }}
