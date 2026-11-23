@@ -127,7 +127,7 @@ internal sealed class AnnouncementService : IDisposable
     private static string Clean(string? value, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
-        string clean = new string(value.Where(character => !char.IsControl(character)).ToArray()).Trim();
+        string clean = new(value.Where(character => !char.IsControl(character)).ToArray()).Trim();
         return clean.Length <= maxLength ? clean : clean[..maxLength];
     }
 

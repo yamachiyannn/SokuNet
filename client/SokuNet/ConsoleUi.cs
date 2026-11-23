@@ -9,6 +9,8 @@ internal sealed class ConsoleUi : IDisposable
     private const uint ScClose = 0xF060;
     private const uint MfByCommand = 0x00000000;
     private const int StdInputHandle = -10;
+    private const uint EnableQuickEditMode = 0x0040;
+    private const uint EnableExtendedFlags = 0x0080;
 
     private IntPtr _window;
     private bool _allocated;
@@ -50,6 +52,10 @@ internal sealed class ConsoleUi : IDisposable
                 _ = DrawMenuBar(_window);
             }
         }
+        // Quick Edit pauses console output while text is selected. Windows then
+        // prefixes the title with "選択" and the UI may appear frozen until a key
+        // is pressed. Disable it so mouse selection cannot suspend SokuNet.
+        DisableQuickEditMode();
         _ = ShowWindow(_window, 4);
         _lastFrame = string.Empty;
     }
@@ -162,9 +168,9 @@ internal sealed class ConsoleUi : IDisposable
         WriteLine("                    SokuNet - 天則網", ConsoleColor.Cyan);
         WriteLine("============================================================", ConsoleColor.DarkGray);
 
-        Console.WriteLine();
+        WriteLine("");
         WriteLine("お知らせ", ConsoleColor.Cyan);
-        WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
+        WriteLine("------------------------------------------------------------", ConsoleColor.White);
         if (announcements.Count == 0)
             WriteLine("  現在お知らせはありません。", ConsoleColor.DarkGray);
         else
@@ -177,9 +183,9 @@ internal sealed class ConsoleUi : IDisposable
             }
         }
 
-        Console.WriteLine();
+        WriteLine("");
         WriteLine("フレンド", ConsoleColor.White);
-        WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
+        WriteLine("------------------------------------------------------------", ConsoleColor.White);
         FriendPresence[] ordered = friends.OrderBy(friend => friend.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
         if (ordered.Length == 0)
             WriteLine("  現在オンラインのフレンドはいません。", ConsoleColor.DarkGray);
@@ -197,23 +203,23 @@ internal sealed class ConsoleUi : IDisposable
 
         if (_detailsVisible)
         {
-            Console.WriteLine();
+            WriteLine("");
             WriteLine("自分の状態", ConsoleColor.White);
-            WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
+            WriteLine("------------------------------------------------------------", ConsoleColor.White);
             WriteLine($"  表示名       : {displayName}", ConsoleColor.Gray);
             WriteLine($"  天則状態     : {gameStatus}", GetStateColor(gameStatus));
             WriteLine($"  離席中？     : {(isAway ? "はい" : "いいえ")}", isAway ? ConsoleColor.White : ConsoleColor.Gray);
             WriteLine($"  情報公開     : {(isPrivate ? "非公開" : "公開中")}", isPrivate ? ConsoleColor.DarkGray : ConsoleColor.Gray);
             WriteLine($"  通信         : {connectionStatus}", ConsoleColor.Gray);
             WriteLine($"  役割         : {roleText}", ConsoleColor.Gray);
-            Console.WriteLine();
+            WriteLine("");
             WriteLine($"  天則起動時間 : {FormatTime(playtime.GameRunning)}", ConsoleColor.White);
-            WriteLine($"  総練習時間   : {FormatTime(playtime.Practice)}", ConsoleColor.Green);
-            WriteLine($"  総対戦時間   : {FormatTime(playtime.Battle)}", ConsoleColor.Red);
+            WriteLine($"  総練習時間   : {FormatTime(playtime.Practice)}", ConsoleColor.White);
+            WriteLine($"  総対戦時間   : {FormatTime(playtime.Battle)}", ConsoleColor.White);
         }
 
-        Console.WriteLine();
-        WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
+        WriteLine("");
+        WriteLine("------------------------------------------------------------", ConsoleColor.White);
         WriteLine("  [S] 自分の状態を表示 / 非表示    [P] 情報公開 / 非公開", ConsoleColor.Gray);
         WriteLine("  ※ S・P はこのCMDウィンドウを選択している間だけ有効", ConsoleColor.DarkGray);
         Console.ResetColor();
@@ -228,6 +234,18 @@ internal sealed class ConsoleUi : IDisposable
         "離席中" => ConsoleColor.White,
         _ => ConsoleColor.White
     };
+
+    private static void DisableQuickEditMode()
+    {
+        IntPtr inputHandle = GetStdHandle(StdInputHandle);
+        if (inputHandle == IntPtr.Zero || inputHandle == new IntPtr(-1))
+            return;
+        if (!GetConsoleMode(inputHandle, out uint mode))
+            return;
+
+        mode = (mode | EnableExtendedFlags) & ~EnableQuickEditMode;
+        _ = SetConsoleMode(inputHandle, mode);
+    }
 
     private static void WriteLine(string text, ConsoleColor color)
     {
@@ -263,6 +281,8 @@ internal sealed class ConsoleUi : IDisposable
     [DllImport("kernel32.dll")] private static extern IntPtr GetConsoleWindow();
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GetStdHandle(int standardHandle);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool FlushConsoleInputBuffer(IntPtr consoleInput);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetConsoleMode(IntPtr consoleHandle, out uint mode);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetConsoleMode(IntPtr consoleHandle, uint mode);
     [DllImport("kernel32.dll")] private static extern bool FreeConsole();
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
