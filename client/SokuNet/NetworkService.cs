@@ -43,6 +43,9 @@ internal sealed class NetworkService : IDisposable
     private readonly object _presenceLock = new();
     private LocalPresence _currentPresence;
     private bool _hasPresence;
+    // Presence changes during the WebSocket handshake are retained locally and
+    // flushed immediately after the initial hello/welcome exchange begins.
+    private int _initialHandshakeReady;
     private ClientWebSocket? _socket;
     private string _connectionStatus = "未設定";
     private string _roleText = "未接続";
@@ -99,7 +102,7 @@ internal sealed class NetworkService : IDisposable
             _hasPresence = true;
         }
 
-        if (changed && !_disposed)
+        if (changed && !_disposed && Volatile.Read(ref _initialHandshakeReady) != 0)
             _ = SendCurrentPresenceQuietlyAsync(isInitial: false, _shutdownToken);
     }
 
@@ -112,6 +115,7 @@ internal sealed class NetworkService : IDisposable
         while (!_shutdown.IsCancellationRequested)
         {
             using var socket = new ClientWebSocket();
+            Volatile.Write(ref _initialHandshakeReady, 0);
             try
             {
                 socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(25);
@@ -122,6 +126,12 @@ internal sealed class NetworkService : IDisposable
                 retrySeconds = 2;
                 Volatile.Write(ref _connectionStatus, "接続済み");
                 await SendCurrentPresenceAsync(isInitial: true, _shutdownToken).ConfigureAwait(false);
+                Volatile.Write(ref _initialHandshakeReady, 1);
+
+                // Flush the newest state in case it changed while ConnectAsync or
+                // the initial hello was in flight. This avoids sending "presence"
+                // before "hello" and losing the first roster handshake.
+                await SendCurrentPresenceAsync(isInitial: false, _shutdownToken).ConfigureAwait(false);
                 await ReceiveLoopAsync(socket, _shutdownToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
@@ -136,6 +146,7 @@ internal sealed class NetworkService : IDisposable
             {
                 if (ReferenceEquals(_socket, socket))
                     _socket = null;
+                Volatile.Write(ref _initialHandshakeReady, 0);
                 Volatile.Write(ref _roleText, "未接続");
                 _friends.Clear();
                 if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)

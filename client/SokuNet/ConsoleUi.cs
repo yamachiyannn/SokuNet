@@ -5,7 +5,8 @@ namespace SokuNet;
 
 /// <summary>
 /// Owns the CMD window shown while th123.exe is running. The app itself remains
-/// a tray application; the console is allocated on demand and hidden on game exit.
+/// a tray application; the console is allocated on demand and detached on game exit
+/// so the console window is actually closed rather than merely hidden.
 /// </summary>
 internal sealed class ConsoleUi : IDisposable
 {
@@ -47,13 +48,18 @@ internal sealed class ConsoleUi : IDisposable
             _controlHandlerInstalled = SetConsoleCtrlHandler(ControlHandler, add: true);
             _window = GetConsoleWindow();
             if (_window == IntPtr.Zero)
+            {
+                CloseWindow();
                 return;
+            }
 
             try
             {
                 var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
                 Console.OutputEncoding = utf8;
+                Console.SetIn(new StreamReader(Console.OpenStandardInput(), utf8));
                 Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), utf8) { AutoFlush = true });
+                Console.SetError(new StreamWriter(Console.OpenStandardError(), utf8) { AutoFlush = true });
                 Console.Title = "SokuNet - 天則網";
                 Console.CursorVisible = false;
             }
@@ -72,10 +78,46 @@ internal sealed class ConsoleUi : IDisposable
         _lastFrame = string.Empty;
     }
 
-    public void Hide()
+    /// <summary>
+    /// Closes the dedicated console window while keeping the tray application alive.
+    /// FreeConsole detaches this process; because this console is created exclusively
+    /// for SokuNet, Windows closes its console window when the process detaches.
+    /// A later Show() call allocates a fresh console window.
+    /// </summary>
+    public void CloseWindow()
     {
-        if (_window != IntPtr.Zero && IsWindow(_window))
-            _ = ShowWindow(_window, SwHide);
+        if (_allocated)
+        {
+            bool detached = false;
+            try { detached = FreeConsole(); } catch { }
+            if (!detached && _window != IntPtr.Zero && IsWindow(_window))
+            {
+                // Fallback for an unusual detach failure. Keep the console attached
+                // and its streams/handler intact so a later Show() can reuse it.
+                _ = ShowWindow(_window, SwHide);
+                return;
+            }
+        }
+
+        if (_controlHandlerInstalled)
+        {
+            try { _ = SetConsoleCtrlHandler(ControlHandler, add: false); } catch { }
+            _controlHandlerInstalled = false;
+        }
+
+        // Do not leave Console writers pointing at handles that have just closed.
+        try
+        {
+            Console.SetOut(TextWriter.Null);
+            Console.SetError(TextWriter.Null);
+            Console.SetIn(TextReader.Null);
+        }
+        catch (IOException) { }
+        catch (InvalidOperationException) { }
+
+        _allocated = false;
+        _window = IntPtr.Zero;
+        _lastFrame = string.Empty;
     }
 
     public void ToggleDetails()
@@ -179,16 +221,7 @@ internal sealed class ConsoleUi : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        Hide();
-        if (_controlHandlerInstalled)
-        {
-            try { _ = SetConsoleCtrlHandler(ControlHandler, add: false); } catch { }
-        }
-        if (_allocated)
-        {
-            try { _ = FreeConsole(); } catch { }
-        }
-        _window = IntPtr.Zero;
+        CloseWindow();
     }
 
     private delegate bool ConsoleControlHandler(uint controlType);

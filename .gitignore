@@ -5,3 +5,16 @@ obj/
 publish/
 *.user
 *.suo
+artifacts/
+
+server/cloudflare/node_modules/
+server/cloudflare/.wrangler/
+server/cloudflare/.dev.vars
+.env
+.env.*
+
+# Local runtime settings (contains the private group code)
+config.json
+**/config.json
+config.json.tmp
+**/config.json.tmp

@@ -134,7 +134,7 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         if (_game.IsRunning && !_wasGameRunning)
             _consoleUi.Show();
         else if (!_game.IsRunning && _wasGameRunning)
-            _consoleUi.Hide();
+            _consoleUi.CloseWindow();
         _wasGameRunning = _game.IsRunning;
 
         // S and P are deliberately accepted only while the CMD window owns focus.
