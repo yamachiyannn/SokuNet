@@ -32,6 +32,8 @@ internal sealed class OverlayForm : Form
     private DateTime _noticeUntil;
     private readonly ConcurrentQueue<string> _pendingRemoteNotifications = new();
     private bool _isShowingRemoteNotification;
+    private string _networkStatus = "未設定";
+    private string _networkRole = "未接続";
 
     public OverlayForm()
     {
@@ -92,13 +94,18 @@ internal sealed class OverlayForm : Form
         RefreshVisibility();
     }
 
-    // Server integration point: the future realtime client can enqueue state changes here.
-    // Notifications remain queued while the game is in SceneID 13 or 14.
+    // Network events are queued while the game is in SceneID 13 or 14.
     public void EnqueueRemoteStateChange(string playerName, string stateText)
     {
         string safeName = LimitText(playerName, 28);
         string safeState = LimitText(stateText, 60);
         _pendingRemoteNotifications.Enqueue($"{safeName} の状態が変わりました：{safeState}");
+    }
+
+    public void UpdateNetworkInfo(string status, string role)
+    {
+        _networkStatus = status;
+        _networkRole = role;
     }
 
     public void UpdateGame(GameMonitorResult game, bool gameForeground, bool isAway, AppSettings settings)
@@ -160,8 +167,8 @@ internal sealed class OverlayForm : Form
         int width = _page == LocalOverlayPage.Details ? 560 : 500;
         int height = _page switch
         {
-            LocalOverlayPage.Summary => 190,
-            LocalOverlayPage.Details => 330,
+            LocalOverlayPage.Summary => 170,
+            LocalOverlayPage.Details => 356,
             _ => 110
         };
         Size = new Size(width, height);
@@ -229,11 +236,9 @@ internal sealed class OverlayForm : Form
 
         if (_page == LocalOverlayPage.Summary)
         {
-            DrawLine(e.Graphics, "SokuNet - 天則網", y, bold: true, size: 13f);
-            y += 34;
             DrawLine(e.Graphics, $"天則状態：{GetGameStatusText()}", y); y += 29;
             DrawLine(e.Graphics, $"離席中？：{(_game.IsRunning ? (_isAway ? "はい" : "いいえ") : "-")}", y); y += 29;
-            DrawLine(e.Graphics, "情報公開：公開中", y); y += 35;
+            DrawLine(e.Graphics, $"情報公開：{(_settings.PrivateMode ? "非公開中" : "公開中")}", y); y += 35;
             DrawLine(e.Graphics, "[Q] 終了    [P] 情報公開/非公開    [S] 詳細表示    [Esc] 閉じる", y, size: 9.5f);
         }
         else if (_page == LocalOverlayPage.Details)
@@ -245,6 +250,7 @@ internal sealed class OverlayForm : Form
             DrawLine(e.Graphics, $"天則状態：{GetGameStatusText()}", y); y += 26;
             DrawLine(e.Graphics, $"SceneID：{(_game.SnapshotAvailable ? _game.Snapshot.SceneId.ToString() : "取得不可")}", y); y += 26;
             DrawLine(e.Graphics, $"離席判定：{_settings.AwayTimeoutMinutes}分", y); y += 26;
+            DrawLine(e.Graphics, $"通信：{_networkStatus} / {_networkRole}", y); y += 26;
             DrawLine(e.Graphics, $"設定ファイル：{_settingsStorePath()}", y, size: 8.5f); y += 30;
             DrawLine(e.Graphics, "[Q] 終了    [P] 情報公開/非公開    [S] 状態表示    [Esc] 閉じる", y, size: 9.5f);
         }

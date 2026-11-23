@@ -9,20 +9,38 @@ internal sealed class KeyboardActivityTracker
     private const short KeyDownMask = unchecked((short)0x8000);
     private readonly bool[] _previousDown = new bool[VirtualKeyCount];
 
-    public bool PollForNewKeyDown(bool gameForeground)
+    public bool PollForNewKeyDown(
+        bool gameForeground,
+        out bool sPressed,
+        out bool pPressed,
+        out bool qPressed,
+        out bool escapePressed)
     {
         bool anyNewKeyDown = false;
+        sPressed = false;
+        pPressed = false;
+        qPressed = false;
+        escapePressed = false;
 
-        // Mouse virtual keys are deliberately excluded. Key values are never stored
-        // or logged; only down/up transitions are observed.
+        // Only key-down edges are observed. Mouse buttons and key contents are not stored.
         for (int virtualKey = 1; virtualKey < VirtualKeyCount; virtualKey++)
         {
             if (virtualKey is 0x01 or 0x02 or 0x04 or 0x05 or 0x06 or 0xE7)
                 continue;
 
             bool isDown = (KeyboardNativeMethods.GetAsyncKeyState(virtualKey) & KeyDownMask) != 0;
-            if (gameForeground && isDown && !_previousDown[virtualKey])
+            bool pressed = gameForeground && isDown && !_previousDown[virtualKey];
+            if (pressed)
+            {
                 anyNewKeyDown = true;
+                switch (virtualKey)
+                {
+                    case 0x53: sPressed = true; break;
+                    case 0x50: pPressed = true; break;
+                    case 0x51: qPressed = true; break;
+                    case 0x1B: escapePressed = true; break;
+                }
+            }
             _previousDown[virtualKey] = isDown;
         }
 
@@ -57,7 +75,6 @@ internal sealed class AwayTracker
         if (_wasGameForeground && gameForeground && !keyboardInput)
             _inactiveDurationTicks = Math.Min(long.MaxValue - elapsed, _inactiveDurationTicks) + elapsed;
 
-        // A key-down edge resets the timer only while the game is foreground.
         if (gameForeground && keyboardInput)
             _inactiveDurationTicks = 0;
 

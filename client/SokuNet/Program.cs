@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -31,11 +30,13 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
     private readonly OverlayForm _overlay = new();
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _timer;
+    private NetworkService? _network;
     private GameMonitorResult _game = GameMonitorResult.NotRunning;
     private bool _wasGameRunning;
     private bool _pendingGameStartNotice;
     private bool _disposed;
     private long _nextGamePoll;
+    private bool _lastAway;
 
     public SokuNetApplicationContext()
     {
@@ -44,6 +45,7 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("ローカル状態を表示", null, (_, _) => _overlay.ToggleSummary());
+        menu.Items.Add("通信設定...", null, (_, _) => OpenNetworkSettings());
         menu.Items.Add("情報公開 / 非公開を切り替え", null, (_, _) => TogglePrivacy());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("終了", null, (_, _) => ExitThread());
@@ -57,6 +59,7 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         };
         _trayIcon.DoubleClick += (_, _) => _overlay.ToggleSummary();
 
+        RestartNetwork();
         _timer = new System.Windows.Forms.Timer { Interval = (int)UiPollInterval.TotalMilliseconds };
         _timer.Tick += OnTimerTick;
         _timer.Start();
@@ -106,11 +109,45 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
                 _overlay.HideLocalView();
         }
 
+        string gameStatus = GetGameStatusText(_game);
+        _network?.UpdatePresence(new LocalPresence(
+            _settings.DisplayName,
+            gameStatus,
+            isAway,
+            _settings.PrivateMode));
+
+        while (_network is not null && _network.TryDequeueNotification(out RemoteNotification? notification))
+        {
+            if (notification is not null)
+                _overlay.EnqueueRemoteStateChange(notification.PlayerName, notification.StateText);
+        }
+
+        _overlay.UpdateNetworkInfo(_network?.ConnectionStatus ?? "未設定", _network?.RoleText ?? "未接続");
         _overlay.UpdateGame(_game, gameForeground, isAway, _settings);
-        _trayIcon.Text = _game.IsRunning
-            ? (gameForeground ? "SokuNet - 天則起動中" : "SokuNet - 天則起動中（背面）")
-            : "SokuNet - 天則待機中";
+
+        string trayStatus = _network?.ConnectionStatus ?? "未設定";
+        string gameText = !_game.IsRunning ? "天則待機中" : gameForeground ? "天則起動中" : "天則背面";
+        _trayIcon.Text = LimitTrayText($"SokuNet - {gameText} / {trayStatus}");
+        _lastAway = isAway;
     }
+
+    private static string GetGameStatusText(GameMonitorResult game)
+    {
+        if (!game.IsRunning)
+            return "未起動";
+        if (!game.SnapshotAvailable)
+            return "取得不可";
+        return game.SceneStatus switch
+        {
+            GameSceneStatus.Battle => "対戦中",
+            GameSceneStatus.Watching => "観戦中",
+            GameSceneStatus.Practice => "練習中",
+            GameSceneStatus.Other => "その他",
+            _ => "取得不可"
+        };
+    }
+
+    private static string LimitTrayText(string value) => value.Length <= 63 ? value : value[..63];
 
     private static long ToStopwatchTicks(TimeSpan duration) =>
         (long)(duration.TotalSeconds * Stopwatch.Frequency);
@@ -123,12 +160,50 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         {
             _settingsStore.Save(_settings);
             _overlay.ShowSystemNotice(_settings.PrivateMode ? "情報を非公開にしました" : "情報を公開しました");
+            _network?.UpdatePresence(new LocalPresence(
+                _settings.DisplayName,
+                GetGameStatusText(_game),
+                _lastAway,
+                _settings.PrivateMode));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _settings.PrivateMode = oldValue;
             _overlay.ShowSystemNotice("設定を保存できませんでした");
         }
+    }
+
+    private void OpenNetworkSettings()
+    {
+        using var dialog = new NetworkSettingsForm(_settings);
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        string oldName = _settings.DisplayName;
+        string oldUrl = _settings.RelayUrl;
+        string oldCode = _settings.RoomCode;
+        _settings.DisplayName = dialog.DisplayName;
+        _settings.RelayUrl = dialog.RelayUrl;
+        _settings.RoomCode = dialog.RoomCode;
+        try
+        {
+            _settingsStore.Save(_settings);
+            RestartNetwork();
+            _overlay.ShowSystemNotice("通信設定を保存しました");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _settings.DisplayName = oldName;
+            _settings.RelayUrl = oldUrl;
+            _settings.RoomCode = oldCode;
+            _overlay.ShowSystemNotice("通信設定を保存できませんでした");
+        }
+    }
+
+    private void RestartNetwork()
+    {
+        _network?.Dispose();
+        _network = new NetworkService(_settings);
     }
 
     protected override void ExitThreadCore()
@@ -138,6 +213,7 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         _disposed = true;
         _timer.Stop();
         _timer.Dispose();
+        _network?.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         _overlay.Close();
@@ -146,97 +222,4 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         _settingsStore.Dispose();
         base.ExitThreadCore();
     }
-}
-
-internal sealed class KeyboardActivityTracker
-{
-    private const int VirtualKeyCount = 256;
-    private const short KeyDownMask = unchecked((short)0x8000);
-    private readonly bool[] _previousDown = new bool[VirtualKeyCount];
-
-    public bool PollForNewKeyDown(
-        bool gameForeground,
-        out bool sPressed,
-        out bool pPressed,
-        out bool qPressed,
-        out bool escapePressed)
-    {
-        bool anyNewKeyDown = false;
-        sPressed = false;
-        pPressed = false;
-        qPressed = false;
-        escapePressed = false;
-
-        for (int virtualKey = 1; virtualKey < VirtualKeyCount; virtualKey++)
-        {
-            if (virtualKey is 0x01 or 0x02 or 0x04 or 0x05 or 0x06 or 0xE7)
-                continue;
-
-            bool isDown = (KeyboardNativeMethods.GetAsyncKeyState(virtualKey) & KeyDownMask) != 0;
-            bool pressed = gameForeground && isDown && !_previousDown[virtualKey];
-            if (pressed)
-            {
-                anyNewKeyDown = true;
-                switch (virtualKey)
-                {
-                    case 0x53: sPressed = true; break; // S
-                    case 0x50: pPressed = true; break; // P
-                    case 0x51: qPressed = true; break; // Q
-                    case 0x1B: escapePressed = true; break; // Escape
-                }
-            }
-            _previousDown[virtualKey] = isDown;
-        }
-
-        return anyNewKeyDown;
-    }
-}
-
-internal sealed class AwayTracker
-{
-    private readonly long _thresholdTicks;
-    private long _inactiveDurationTicks;
-    private long _lastTimestamp;
-    private bool _wasGameForeground;
-
-    public AwayTracker(TimeSpan threshold)
-    {
-        if (threshold <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(threshold));
-        _thresholdTicks = (long)(threshold.TotalSeconds * Stopwatch.Frequency);
-        _lastTimestamp = Stopwatch.GetTimestamp();
-    }
-
-    public bool Update(bool processRunning, bool gameForeground, bool keyboardInput, long now)
-    {
-        if (!processRunning)
-        {
-            Reset(now);
-            return false;
-        }
-
-        long elapsed = Math.Max(0, now - _lastTimestamp);
-        if (_wasGameForeground && gameForeground && !keyboardInput)
-            _inactiveDurationTicks = Math.Min(long.MaxValue - elapsed, _inactiveDurationTicks) + elapsed;
-
-        if (gameForeground && keyboardInput)
-            _inactiveDurationTicks = 0;
-
-        _wasGameForeground = gameForeground;
-        _lastTimestamp = now;
-        return _inactiveDurationTicks >= _thresholdTicks;
-    }
-
-    public void Reset(long? now = null)
-    {
-        _inactiveDurationTicks = 0;
-        _wasGameForeground = false;
-        _lastTimestamp = now ?? Stopwatch.GetTimestamp();
-    }
-}
-
-internal static class KeyboardNativeMethods
-{
-    [DllImport("user32.dll")]
-    internal static extern short GetAsyncKeyState(int virtualKey);
 }
