@@ -162,7 +162,7 @@ internal sealed class ConsoleUi : IDisposable
         WriteLine("                    SokuNet - 天則網", ConsoleColor.Cyan);
         WriteLine("============================================================", ConsoleColor.DarkGray);
 
-        WriteLine("");
+        Console.WriteLine();
         WriteLine("お知らせ", ConsoleColor.Cyan);
         WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
         if (announcements.Count == 0)
@@ -177,7 +177,7 @@ internal sealed class ConsoleUi : IDisposable
             }
         }
 
-        WriteLine("");
+        Console.WriteLine();
         WriteLine("フレンド", ConsoleColor.White);
         WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
         FriendPresence[] ordered = friends.OrderBy(friend => friend.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -197,7 +197,7 @@ internal sealed class ConsoleUi : IDisposable
 
         if (_detailsVisible)
         {
-            WriteLine("");
+            Console.WriteLine();
             WriteLine("自分の状態", ConsoleColor.White);
             WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
             WriteLine($"  表示名       : {displayName}", ConsoleColor.Gray);
@@ -206,13 +206,13 @@ internal sealed class ConsoleUi : IDisposable
             WriteLine($"  情報公開     : {(isPrivate ? "非公開" : "公開中")}", isPrivate ? ConsoleColor.DarkGray : ConsoleColor.Gray);
             WriteLine($"  通信         : {connectionStatus}", ConsoleColor.Gray);
             WriteLine($"  役割         : {roleText}", ConsoleColor.Gray);
-            WriteLine("");
+            Console.WriteLine();
             WriteLine($"  天則起動時間 : {FormatTime(playtime.GameRunning)}", ConsoleColor.White);
             WriteLine($"  総練習時間   : {FormatTime(playtime.Practice)}", ConsoleColor.Green);
             WriteLine($"  総対戦時間   : {FormatTime(playtime.Battle)}", ConsoleColor.Red);
         }
 
-        WriteLine("");
+        Console.WriteLine();
         WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
         WriteLine("  [S] 自分の状態を表示 / 非表示    [P] 情報公開 / 非公開", ConsoleColor.Gray);
         WriteLine("  ※ S・P はこのCMDウィンドウを選択している間だけ有効", ConsoleColor.DarkGray);
