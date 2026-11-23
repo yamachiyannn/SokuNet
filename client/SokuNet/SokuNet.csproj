@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
     <TargetFramework>net10.0-windows</TargetFramework>
     <AssemblyName>sokunet</AssemblyName>
     <RootNamespace>SokuNet</RootNamespace>

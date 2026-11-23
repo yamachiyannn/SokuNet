@@ -28,9 +28,11 @@ internal sealed class GameMonitor : IDisposable
         }
 
         int pid;
+        IntPtr windowHandle;
         try
         {
             pid = target.Id;
+            windowHandle = target.MainWindowHandle;
         }
         catch (InvalidOperationException)
         {
@@ -58,7 +60,8 @@ internal sealed class GameMonitor : IDisposable
                 ProcessId: _processId,
                 SnapshotAvailable: false,
                 Snapshot: default,
-                ReadError: Marshal.GetLastWin32Error());
+                ReadError: Marshal.GetLastWin32Error(),
+                WindowHandle: windowHandle);
         }
 
         if (!TryReadSnapshot(_processHandle, out GameSnapshot snapshot, out int error))
@@ -68,7 +71,8 @@ internal sealed class GameMonitor : IDisposable
                 ProcessId: _processId,
                 SnapshotAvailable: false,
                 Snapshot: default,
-                ReadError: error);
+                ReadError: error,
+                WindowHandle: windowHandle);
         }
 
         return new GameMonitorResult(
@@ -76,7 +80,8 @@ internal sealed class GameMonitor : IDisposable
             ProcessId: _processId,
             SnapshotAvailable: true,
             Snapshot: snapshot,
-            ReadError: 0);
+            ReadError: 0,
+            WindowHandle: windowHandle);
     }
 
     private static Process? FindTargetProcess()
@@ -196,14 +201,16 @@ internal readonly record struct GameMonitorResult(
     int ProcessId,
     bool SnapshotAvailable,
     GameSnapshot Snapshot,
-    int ReadError)
+    int ReadError,
+    IntPtr WindowHandle)
 {
     public static GameMonitorResult NotRunning => new(
         IsRunning: false,
         ProcessId: 0,
         SnapshotAvailable: false,
         Snapshot: default,
-        ReadError: 0);
+        ReadError: 0,
+        WindowHandle: IntPtr.Zero);
 
     public GameSceneStatus SceneStatus => SnapshotAvailable
         ? GameStateClassifier.Classify(Snapshot)

@@ -1,147 +1,242 @@
 using System.Diagnostics;
-using System.Text;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Forms;
 
 namespace SokuNet;
 
 internal static class Program
 {
-    private static readonly TimeSpan MainLoopInterval = TimeSpan.FromMilliseconds(20);
-    private static readonly TimeSpan GamePollInterval = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan UiRefreshInterval = TimeSpan.FromMilliseconds(200);
-    private static int _stopRequested;
-
-    private static int Main()
+    [STAThread]
+    private static void Main()
     {
-        Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-        Console.InputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-        try
+        using var mutex = new Mutex(initiallyOwned: true, name: @"Local\SokuNet.TrayApplication", createdNew: out bool createdNew);
+        if (!createdNew)
+            return;
+
+        ApplicationConfiguration.Initialize();
+        Application.Run(new SokuNetApplicationContext());
+    }
+}
+
+internal sealed class SokuNetApplicationContext : ApplicationContext
+{
+    private static readonly TimeSpan UiPollInterval = TimeSpan.FromMilliseconds(20);
+    private static readonly TimeSpan GamePollInterval = TimeSpan.FromMilliseconds(100);
+    private readonly SettingsManager _settingsStore = new();
+    private readonly AppSettings _settings;
+    private readonly GameMonitor _gameMonitor = new();
+    private readonly KeyboardActivityTracker _keyboard = new();
+    private readonly AwayTracker _away;
+    private readonly OverlayForm _overlay = new();
+    private readonly NotifyIcon _trayIcon;
+    private readonly System.Windows.Forms.Timer _timer;
+    private GameMonitorResult _game = GameMonitorResult.NotRunning;
+    private bool _wasGameRunning;
+    private bool _pendingGameStartNotice;
+    private bool _disposed;
+    private long _nextGamePoll;
+
+    public SokuNetApplicationContext()
+    {
+        _settings = _settingsStore.Load();
+        _away = new AwayTracker(TimeSpan.FromMinutes(_settings.AwayTimeoutMinutes));
+
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("ローカル状態を表示", null, (_, _) => _overlay.ToggleSummary());
+        menu.Items.Add("情報公開 / 非公開を切り替え", null, (_, _) => TogglePrivacy());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("終了", null, (_, _) => ExitThread());
+
+        _trayIcon = new NotifyIcon
         {
-            Console.Title = "SokuNet - 天則網";
-            Console.CursorVisible = false;
-        }
-        catch (IOException)
-        {
-            // Console hosts may not support title/cursor operations.
-        }
-
-        using var settingsStore = new SettingsManager();
-        AppSettings settings = settingsStore.Load();
-        using var gameMonitor = new GameMonitor();
-
-        var keyboard = new KeyboardActivityTracker();
-        var away = new AwayTracker(TimeSpan.FromMinutes(settings.AwayTimeoutMinutes));
-        var ui = new ConsoleUI();
-
-        GameMonitorResult game = GameMonitorResult.NotRunning;
-        bool settingsView = false;
-        string? notice = null;
-        long nextGamePoll = 0;
-        long nextUiRefresh = 0;
-        long lastNoticeAt = 0;
-
-        Console.CancelKeyPress += (_, e) =>
-        {
-            e.Cancel = true;
-            Interlocked.Exchange(ref _stopRequested, 1);
+            Icon = System.Drawing.SystemIcons.Application,
+            Text = "SokuNet - 天則網（待機中）",
+            ContextMenuStrip = menu,
+            Visible = true
         };
+        _trayIcon.DoubleClick += (_, _) => _overlay.ToggleSummary();
 
-        try
-        {
-            Console.Clear();
-            while (Volatile.Read(ref _stopRequested) == 0)
-            {
-                long now = Stopwatch.GetTimestamp();
-
-                while (TryReadConsoleKey(out ConsoleKey key))
-                {
-                    switch (key)
-                    {
-                        case ConsoleKey.Q:
-                            Interlocked.Exchange(ref _stopRequested, 1);
-                            break;
-                        case ConsoleKey.P:
-                            settings.PrivateMode = !settings.PrivateMode;
-                            try
-                            {
-                                settingsStore.Save(settings);
-                                notice = settings.PrivateMode
-                                    ? "情報を非公開にしました。"
-                                    : "情報を公開しました。";
-                                lastNoticeAt = now;
-                            }
-                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                            {
-                                settings.PrivateMode = !settings.PrivateMode;
-                                notice = $"設定を保存できませんでした: {ex.Message}";
-                                lastNoticeAt = now;
-                            }
-                            break;
-                        case ConsoleKey.S:
-                            settingsView = !settingsView;
-                            break;
-                    }
-                }
-
-                if (now >= nextGamePoll)
-                {
-                    game = gameMonitor.Update();
-                    nextGamePoll = now + ToStopwatchTicks(GamePollInterval);
-                    if (!game.IsRunning)
-                        away.Reset(now);
-                }
-
-                bool gameIsForeground = game.IsRunning && gameMonitor.IsCurrentProcessForeground;
-                bool keyboardInput = keyboard.PollForNewKeyDown(gameIsForeground);
-                bool isAway = away.Update(game.IsRunning, gameIsForeground, keyboardInput, now);
-
-                if (now >= nextUiRefresh)
-                {
-                    ui.Render(game, gameIsForeground, isAway, settings, settingsView,
-                        notice is not null && now - lastNoticeAt < ToStopwatchTicks(TimeSpan.FromSeconds(3))
-                            ? notice
-                            : null);
-                    nextUiRefresh = now + ToStopwatchTicks(UiRefreshInterval);
-                }
-
-                Thread.Sleep(MainLoopInterval);
-            }
-        }
-        finally
-        {
-            try
-            {
-                Console.CursorVisible = true;
-                Console.SetCursorPosition(0, Math.Min(Console.CursorTop, Math.Max(0, Console.BufferHeight - 1)));
-            }
-            catch (IOException)
-            {
-                // Ignore console teardown errors.
-            }
-        }
-
-        return 0;
+        _timer = new System.Windows.Forms.Timer { Interval = (int)UiPollInterval.TotalMilliseconds };
+        _timer.Tick += OnTimerTick;
+        _timer.Start();
     }
 
-    private static bool TryReadConsoleKey(out ConsoleKey key)
+    private void OnTimerTick(object? sender, EventArgs e)
     {
-        key = default;
-        try
+        long now = Stopwatch.GetTimestamp();
+        if (now >= _nextGamePoll)
         {
-            if (!Console.KeyAvailable)
-                return false;
-            key = Console.ReadKey(intercept: true).Key;
-            return true;
+            _game = _gameMonitor.Update();
+            _nextGamePoll = now + ToStopwatchTicks(GamePollInterval);
         }
-        catch (InvalidOperationException)
+        bool gameForeground = _game.IsRunning && _gameMonitor.IsCurrentProcessForeground;
+
+        bool keyboardInput = _keyboard.PollForNewKeyDown(
+            gameForeground,
+            out bool sPressed,
+            out bool pPressed,
+            out bool qPressed,
+            out bool escapePressed);
+
+        bool isAway = _away.Update(_game.IsRunning, gameForeground, keyboardInput, now);
+
+        if (_game.IsRunning && !_wasGameRunning)
+            _pendingGameStartNotice = true;
+        _wasGameRunning = _game.IsRunning;
+
+        if (_pendingGameStartNotice && gameForeground)
         {
-            return false;
+            _overlay.ShowSystemNotice("東方非想天則を検知しました。Sキーでローカル状態を表示");
+            _pendingGameStartNotice = false;
         }
-        catch (IOException)
+
+        if (gameForeground)
         {
-            return false;
+            if (sPressed)
+                _overlay.CycleLocalView();
+            if (pPressed)
+                TogglePrivacy();
+            if (qPressed)
+            {
+                ExitThread();
+                return;
+            }
+            if (escapePressed)
+                _overlay.HideLocalView();
         }
+
+        _overlay.UpdateGame(_game, gameForeground, isAway, _settings);
+        _trayIcon.Text = _game.IsRunning
+            ? (gameForeground ? "SokuNet - 天則起動中" : "SokuNet - 天則起動中（背面）")
+            : "SokuNet - 天則待機中";
     }
 
     private static long ToStopwatchTicks(TimeSpan duration) =>
         (long)(duration.TotalSeconds * Stopwatch.Frequency);
+
+    private void TogglePrivacy()
+    {
+        bool oldValue = _settings.PrivateMode;
+        _settings.PrivateMode = !oldValue;
+        try
+        {
+            _settingsStore.Save(_settings);
+            _overlay.ShowSystemNotice(_settings.PrivateMode ? "情報を非公開にしました" : "情報を公開しました");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _settings.PrivateMode = oldValue;
+            _overlay.ShowSystemNotice("設定を保存できませんでした");
+        }
+    }
+
+    protected override void ExitThreadCore()
+    {
+        if (_disposed)
+            return;
+        _disposed = true;
+        _timer.Stop();
+        _timer.Dispose();
+        _trayIcon.Visible = false;
+        _trayIcon.Dispose();
+        _overlay.Close();
+        _overlay.Dispose();
+        _gameMonitor.Dispose();
+        _settingsStore.Dispose();
+        base.ExitThreadCore();
+    }
+}
+
+internal sealed class KeyboardActivityTracker
+{
+    private const int VirtualKeyCount = 256;
+    private const short KeyDownMask = unchecked((short)0x8000);
+    private readonly bool[] _previousDown = new bool[VirtualKeyCount];
+
+    public bool PollForNewKeyDown(
+        bool gameForeground,
+        out bool sPressed,
+        out bool pPressed,
+        out bool qPressed,
+        out bool escapePressed)
+    {
+        bool anyNewKeyDown = false;
+        sPressed = false;
+        pPressed = false;
+        qPressed = false;
+        escapePressed = false;
+
+        for (int virtualKey = 1; virtualKey < VirtualKeyCount; virtualKey++)
+        {
+            if (virtualKey is 0x01 or 0x02 or 0x04 or 0x05 or 0x06 or 0xE7)
+                continue;
+
+            bool isDown = (KeyboardNativeMethods.GetAsyncKeyState(virtualKey) & KeyDownMask) != 0;
+            bool pressed = gameForeground && isDown && !_previousDown[virtualKey];
+            if (pressed)
+            {
+                anyNewKeyDown = true;
+                switch (virtualKey)
+                {
+                    case 0x53: sPressed = true; break; // S
+                    case 0x50: pPressed = true; break; // P
+                    case 0x51: qPressed = true; break; // Q
+                    case 0x1B: escapePressed = true; break; // Escape
+                }
+            }
+            _previousDown[virtualKey] = isDown;
+        }
+
+        return anyNewKeyDown;
+    }
+}
+
+internal sealed class AwayTracker
+{
+    private readonly long _thresholdTicks;
+    private long _inactiveDurationTicks;
+    private long _lastTimestamp;
+    private bool _wasGameForeground;
+
+    public AwayTracker(TimeSpan threshold)
+    {
+        if (threshold <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(threshold));
+        _thresholdTicks = (long)(threshold.TotalSeconds * Stopwatch.Frequency);
+        _lastTimestamp = Stopwatch.GetTimestamp();
+    }
+
+    public bool Update(bool processRunning, bool gameForeground, bool keyboardInput, long now)
+    {
+        if (!processRunning)
+        {
+            Reset(now);
+            return false;
+        }
+
+        long elapsed = Math.Max(0, now - _lastTimestamp);
+        if (_wasGameForeground && gameForeground && !keyboardInput)
+            _inactiveDurationTicks = Math.Min(long.MaxValue - elapsed, _inactiveDurationTicks) + elapsed;
+
+        if (gameForeground && keyboardInput)
+            _inactiveDurationTicks = 0;
+
+        _wasGameForeground = gameForeground;
+        _lastTimestamp = now;
+        return _inactiveDurationTicks >= _thresholdTicks;
+    }
+
+    public void Reset(long? now = null)
+    {
+        _inactiveDurationTicks = 0;
+        _wasGameForeground = false;
+        _lastTimestamp = now ?? Stopwatch.GetTimestamp();
+    }
+}
+
+internal static class KeyboardNativeMethods
+{
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int virtualKey);
 }
