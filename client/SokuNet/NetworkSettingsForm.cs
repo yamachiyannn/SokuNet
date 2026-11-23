@@ -43,7 +43,6 @@ internal sealed class NetworkSettingsForm : Form
         _displayName.Text = settings.DisplayName;
         _relayUrl.Text = settings.RelayUrl;
         _roomCode.Text = settings.RoomCode;
-        _roomCode.UseSystemPasswordChar = true;
 
         AddField(layout, 0, "表示名", _displayName);
         AddField(layout, 1, "中継サーバーURL", _relayUrl);
@@ -51,7 +50,7 @@ internal sealed class NetworkSettingsForm : Form
 
         var help = new Label
         {
-            Text = "全員が同じ中継サーバーURLと合言葉を設定してください。\n未設定なら通信せず、ローカル機能だけで動作します。\n合言葉はサーバー側の秘密情報と一致させます。",
+            Text = "全員が同じ中継サーバーURLと合言葉を設定してください。\n表示名・URL・合言葉のどれかが未設定なら通信しません。\n合言葉はサーバー側の秘密情報と一致させます。",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.DimGray
@@ -94,36 +93,33 @@ internal sealed class NetworkSettingsForm : Form
 
     private void SaveAndClose()
     {
-        if (DisplayName.Length is < 1 or > 24)
+        if (DisplayName.Length > 24)
         {
-            MessageBox.Show(this, "表示名は1～24文字で入力してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "表示名は24文字以内で入力してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        if (RelayUrl.Length == 0 && RoomCode.Length == 0)
-        {
-            DialogResult = DialogResult.OK;
-            Close();
-            return;
-        }
-
-        if (!Uri.TryCreate(RelayUrl, UriKind.Absolute, out Uri? uri) ||
-            uri.Scheme is not ("https" or "wss"))
+        if (RelayUrl.Length > 0 &&
+            (!Uri.TryCreate(RelayUrl, UriKind.Absolute, out Uri? uri) || uri.Scheme is not ("https" or "wss")))
         {
             MessageBox.Show(this, "中継サーバーURLには https:// または wss:// から始まるURLを入力してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        bool safeCode = RoomCode.Length >= 16 && RoomCode.All(c =>
-            (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c is '-' or '_');
-        if (!safeCode)
+        if (RoomCode.Length > 0)
         {
-            MessageBox.Show(this, "グループ合言葉は16文字以上の半角英数字・ハイフン・アンダースコアで入力してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
+            bool safeCode = RoomCode.Length >= 16 && RoomCode.All(c =>
+                (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c is '-' or '_');
+            if (!safeCode)
+            {
+                MessageBox.Show(this, "グループ合言葉は16文字以上の半角英数字・ハイフン・アンダースコアで入力してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
         }
 
         DialogResult = DialogResult.OK;
         Close();
     }
+
 }

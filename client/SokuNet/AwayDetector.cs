@@ -53,43 +53,48 @@ internal sealed class KeyboardActivityTracker
 internal sealed class AwayTracker
 {
     private readonly long _thresholdTicks;
-    private long _inactiveDurationTicks;
-    private long _lastTimestamp;
-    private bool _wasGameForeground;
+    private long _lastGameKeyboardActivity;
+    private bool _hasGameSession;
 
     public AwayTracker(TimeSpan threshold)
     {
         if (threshold <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(threshold));
         _thresholdTicks = (long)(threshold.TotalSeconds * Stopwatch.Frequency);
-        _lastTimestamp = Stopwatch.GetTimestamp();
     }
 
-    public bool Update(bool processRunning, bool gameForeground, bool keyboardInput, long now)
+    public bool Update(bool processRunning, bool gameForeground, bool keyboardInput, bool watching, long now)
     {
         if (!processRunning)
         {
-            Reset(now);
+            Reset();
             return false;
         }
 
-        long elapsed = Math.Max(0, now - _lastTimestamp);
-        if (_wasGameForeground && gameForeground && !keyboardInput)
-            _inactiveDurationTicks = Math.Min(long.MaxValue - elapsed, _inactiveDurationTicks) + elapsed;
+        if (!_hasGameSession)
+        {
+            _lastGameKeyboardActivity = now;
+            _hasGameSession = true;
+        }
+
+        if (gameForeground && watching)
+        {
+            // Watching in the active game window is never away. Reset the idle
+            // baseline so leaving spectator mode starts a fresh five-minute period.
+            _lastGameKeyboardActivity = now;
+            return false;
+        }
 
         if (gameForeground && keyboardInput)
-            _inactiveDurationTicks = 0;
+            _lastGameKeyboardActivity = now;
 
-        _wasGameForeground = gameForeground;
-        _lastTimestamp = now;
-        return _inactiveDurationTicks >= _thresholdTicks;
+        return now - _lastGameKeyboardActivity >= _thresholdTicks;
     }
 
-    public void Reset(long? now = null)
+    public void Reset()
     {
-        _inactiveDurationTicks = 0;
-        _wasGameForeground = false;
-        _lastTimestamp = now ?? Stopwatch.GetTimestamp();
+        _lastGameKeyboardActivity = 0;
+        _hasGameSession = false;
     }
 }
 

@@ -1,6 +1,9 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing;
+using System.Net.Http;
 using System.Threading;
+using System.Text.Json;
 using Microsoft.Win32;
 using System.Windows.Forms;
 
@@ -32,6 +35,12 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
     private readonly GameMonitor _gameMonitor = new();
     private readonly KeyboardActivityTracker _keyboard = new();
     private readonly AwayTracker _away;
+    private readonly PlaytimeTracker _playtime;
+    private readonly AnnouncementService _announcementService;
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly ConcurrentQueue<RemoteNotification> _localNotifications = new();
+    private IReadOnlyList<SokuNetAnnouncement> _announcementSnapshot = Array.Empty<SokuNetAnnouncement>();
+    private Task? _announcementTask;
     private readonly ConsoleUi _consoleUi = new();
     private readonly Icon _applicationIcon;
     private readonly OverlayForm _overlay;
@@ -46,22 +55,23 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
     private bool _disposed;
     private long _nextGamePoll;
     private bool _updatingStartupItem;
+    private bool _announcementCheckedForCurrentGame;
+    private long _gameSessionStartedAt;
+    private long _nextHourlyNotificationAt;
 
     public SokuNetApplicationContext()
     {
         _settings = _settingsStore.Load();
-        _away = new AwayTracker(TimeSpan.FromMinutes(_settings.AwayTimeoutMinutes));
+        _away = new AwayTracker(TimeSpan.FromMinutes(5));
+        _playtime = new PlaytimeTracker(_settingsStore.AppDirectory);
+        _announcementService = new AnnouncementService(_settingsStore.AppDirectory);
+        _announcementSnapshot = _announcementService.GetAnnouncements();
         _applicationIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath)
             ?? (Icon)SystemIcons.Application.Clone();
         _overlay = new OverlayForm(_applicationIcon, _settings.NotificationSoundEnabled);
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("CMDを表示", null, (_, _) =>
-        {
-            if (_game.IsRunning)
-                _consoleUi.Show();
-        });
-        menu.Items.Add("通信設定...", null, (_, _) => OpenNetworkSettings());
+        menu.Items.Add("通信設定", null, (_, _) => OpenNetworkSettings());
         menu.Items.Add("設定ファイルを開く", null, (_, _) => OpenConfigFile());
         menu.Items.Add("設定フォルダーを開く", null, (_, _) => OpenConfigFolder());
         menu.Items.Add(new ToolStripSeparator());
@@ -104,7 +114,9 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         // Detect an already-running game before the first presence handshake so
         // friends do not receive a false "game started" event on SokuNet startup.
         _game = _gameMonitor.Update();
-        _nextGamePoll = Stopwatch.GetTimestamp() + ToStopwatchTicks(GamePollInterval);
+        long initialTimestamp = Stopwatch.GetTimestamp();
+        _playtime.Update(_game.IsRunning, _game.SceneStatus, false, initialTimestamp);
+        _nextGamePoll = initialTimestamp + ToStopwatchTicks(GamePollInterval);
         RestartNetwork();
         _timer = new System.Windows.Forms.Timer { Interval = (int)UiPollInterval.TotalMilliseconds };
         _timer.Tick += OnTimerTick;
@@ -127,23 +139,41 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
             commandFocused,
             out bool sPressed,
             out bool pPressed);
-
-        bool isAway = _away.Update(_game.IsRunning, gameForeground, keyboardInput, now);
+        bool watching = _game.SnapshotAvailable && _game.SceneStatus == GameSceneStatus.Watching;
+        bool isAway = _away.Update(_game.IsRunning, gameForeground, keyboardInput, watching, now);
         _currentAway = isAway;
 
+        bool gameEnded = !_game.IsRunning && _wasGameRunning;
         if (_game.IsRunning && !_wasGameRunning)
+        {
             _consoleUi.Show();
+            _gameSessionStartedAt = now;
+            _nextHourlyNotificationAt = now + ToStopwatchTicks(TimeSpan.FromHours(1));
+            _announcementCheckedForCurrentGame = false;
+            if (!IsNetworkConfigured())
+                _localNotifications.Enqueue(new RemoteNotification("天則網を確認してください"));
+            StartAnnouncementCheck();
+        }
         else if (!_game.IsRunning && _wasGameRunning)
+        {
             _consoleUi.CloseWindow();
+            _gameSessionStartedAt = 0;
+            _nextHourlyNotificationAt = 0;
+            _announcementCheckedForCurrentGame = false;
+        }
         _wasGameRunning = _game.IsRunning;
 
-        // S and P are deliberately accepted only while the CMD window owns focus.
         if (commandFocused && sPressed)
             _consoleUi.ToggleDetails();
         if (commandFocused && pPressed)
             TogglePrivacy(isAway);
 
         string gameStatus = GetGameStatusText(_game);
+        PlaytimeSnapshot playtime = _playtime.Update(_game.IsRunning, _game.SceneStatus, isAway, now);
+        if (gameEnded)
+            TrySavePlaytime();
+        QueueHourlyNotifications(now);
+
         _network?.UpdatePresence(new LocalPresence(
             _settings.DisplayName,
             gameStatus,
@@ -154,6 +184,11 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         {
             if (notification is not null)
                 _overlay.EnqueueRemoteNotification(notification);
+        }
+        while (_localNotifications.TryDequeue(out RemoteNotification? localNotification))
+        {
+            if (localNotification is not null)
+                _overlay.EnqueueRemoteNotification(localNotification);
         }
 
         _overlay.SetNotificationSoundEnabled(_settings.NotificationSoundEnabled);
@@ -168,12 +203,63 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
                 _settings.PrivateMode,
                 _network?.ConnectionStatus ?? "未設定",
                 _network?.RoleText ?? "未接続",
-                _settings.DisplayName);
+                _settings.DisplayName,
+                IsNetworkConfigured(),
+                Volatile.Read(ref _announcementSnapshot),
+                playtime);
         }
 
         string trayStatus = _network?.ConnectionStatus ?? "未設定";
         string gameText = !_game.IsRunning ? "天則待機中" : gameForeground ? "天則前面" : "天則起動中";
         _trayIcon.Text = LimitTrayText($"SokuNet - {gameText} / {trayStatus}");
+    }
+
+    private bool IsNetworkConfigured() =>
+        !string.IsNullOrWhiteSpace(_settings.DisplayName) &&
+        !string.IsNullOrWhiteSpace(_settings.RelayUrl) &&
+        !string.IsNullOrWhiteSpace(_settings.RoomCode);
+
+    private void StartAnnouncementCheck()
+    {
+        if (_announcementCheckedForCurrentGame || !_game.IsRunning)
+            return;
+        _announcementCheckedForCurrentGame = true;
+        _announcementTask = CheckAnnouncementsAsync();
+    }
+
+    private async Task CheckAnnouncementsAsync()
+    {
+        try
+        {
+            AnnouncementResult result = await _announcementService.CheckAsync(_shutdown.Token).ConfigureAwait(false);
+            Volatile.Write(ref _announcementSnapshot, result.Announcements);
+            if (!string.IsNullOrWhiteSpace(result.ChangeNotification))
+                _localNotifications.Enqueue(new RemoteNotification(result.ChangeNotification));
+        }
+        catch (OperationCanceledException) { }
+        catch (HttpRequestException) { }
+        catch (InvalidDataException) { }
+        catch (IOException) { }
+        catch (JsonException) { }
+    }
+
+    private void QueueHourlyNotifications(long now)
+    {
+        if (!_game.IsRunning || _gameSessionStartedAt == 0 || _nextHourlyNotificationAt == 0)
+            return;
+        long hourTicks = ToStopwatchTicks(TimeSpan.FromHours(1));
+        while (now >= _nextHourlyNotificationAt)
+        {
+            int hours = (int)Math.Max(1, (_nextHourlyNotificationAt - _gameSessionStartedAt) / hourTicks);
+            _localNotifications.Enqueue(new RemoteNotification($"連続起動: {hours}時間"));
+            _nextHourlyNotificationAt += hourTicks;
+        }
+    }
+
+    private void TrySavePlaytime()
+    {
+        try { _playtime.Save(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     private static string GetGameStatusText(GameMonitorResult game)
@@ -347,6 +433,10 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         _disposed = true;
         _timer.Stop();
         _timer.Dispose();
+        _shutdown.Cancel();
+        try { _announcementTask?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
+        _playtime.Update(_game.IsRunning, _game.SceneStatus, _currentAway, Stopwatch.GetTimestamp());
+        TrySavePlaytime();
         _network?.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
@@ -354,6 +444,8 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         _overlay.Dispose();
         _consoleUi.Dispose();
         _gameMonitor.Dispose();
+        _announcementService.Dispose();
+        _shutdown.Dispose();
         _settingsStore.Dispose();
         _applicationIcon.Dispose();
         base.ExitThreadCore();

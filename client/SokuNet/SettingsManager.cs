@@ -7,8 +7,7 @@ internal sealed class AppSettings
     public bool PrivateMode { get; set; }
     public bool NotificationSoundEnabled { get; set; } = true;
     public bool StartWithWindows { get; set; }
-    public int AwayTimeoutMinutes { get; set; } = 5;
-    public string DisplayName { get; set; } = "プレイヤー";
+    public string DisplayName { get; set; } = string.Empty;
     public string RelayUrl { get; set; } = string.Empty;
     public string RoomCode { get; set; } = string.Empty;
 }
@@ -38,8 +37,7 @@ internal sealed class SettingsManager : IDisposable
 
             AppSettings? loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(ConfigPath), JsonOptions);
             loaded ??= new AppSettings();
-            loaded.AwayTimeoutMinutes = Math.Clamp(loaded.AwayTimeoutMinutes, 1, 120);
-            loaded.DisplayName = CleanSetting(loaded.DisplayName, "プレイヤー", 24);
+            loaded.DisplayName = CleanSetting(loaded.DisplayName, string.Empty, 24);
             loaded.RelayUrl ??= string.Empty;
             loaded.RoomCode ??= string.Empty;
             return loaded;

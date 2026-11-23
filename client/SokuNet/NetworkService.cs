@@ -75,9 +75,11 @@ internal sealed class NetworkService : IDisposable
                 _connectionStatus = "URL設定エラー";
             }
         }
-        else if (!string.IsNullOrWhiteSpace(settings.RelayUrl) || !string.IsNullOrWhiteSpace(_roomCode))
+        else
         {
-            _connectionStatus = IsSafeRoomCode(_roomCode) ? "通信設定不足" : "合言葉設定エラー";
+            _connectionStatus = !string.IsNullOrWhiteSpace(_roomCode) && !IsSafeRoomCode(_roomCode)
+                ? "合言葉設定エラー"
+                : "通信設定不足";
         }
     }
 

@@ -3,15 +3,9 @@ using System.Text;
 
 namespace SokuNet;
 
-/// <summary>
-/// Owns the CMD window shown while th123.exe is running. The app itself remains
-/// a tray application; the console is allocated on demand and detached on game exit
-/// so the console window is actually closed rather than merely hidden.
-/// </summary>
+/// <summary>Owns the CMD window shown while th123.exe is running.</summary>
 internal sealed class ConsoleUi : IDisposable
 {
-    private const int SwHide = 0;
-    private const int SwShowNoActivate = 4;
     private const uint ScClose = 0xF060;
     private const uint MfByCommand = 0x00000000;
     private const int StdInputHandle = -10;
@@ -25,37 +19,21 @@ internal sealed class ConsoleUi : IDisposable
     private static readonly ConsoleControlHandler ControlHandler = HandleConsoleControl;
 
     public bool IsVisible => _window != IntPtr.Zero && IsWindow(_window) && IsWindowVisible(_window);
-
-    public bool IsFocused
-    {
-        get
-        {
-            if (_window == IntPtr.Zero || !IsWindow(_window))
-                return false;
-            return GetForegroundWindow() == _window;
-        }
-    }
+    public bool IsFocused => _window != IntPtr.Zero && IsWindow(_window) && GetForegroundWindow() == _window;
 
     public void Show()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_window == IntPtr.Zero || !IsWindow(_window))
         {
-            if (!AllocConsole() && Marshal.GetLastWin32Error() != 5)
-                return;
-
+            if (!AllocConsole() && Marshal.GetLastWin32Error() != 5) return;
             _allocated = true;
             _controlHandlerInstalled = SetConsoleCtrlHandler(ControlHandler, add: true);
             _window = GetConsoleWindow();
-            if (_window == IntPtr.Zero)
-            {
-                CloseWindow();
-                return;
-            }
-
+            if (_window == IntPtr.Zero) { CloseWindow(); return; }
             try
             {
-                var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+                var utf8 = new UTF8Encoding(false);
                 Console.OutputEncoding = utf8;
                 Console.SetIn(new StreamReader(Console.OpenStandardInput(), utf8));
                 Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), utf8) { AutoFlush = true });
@@ -65,7 +43,6 @@ internal sealed class ConsoleUi : IDisposable
             }
             catch (IOException) { }
 
-            // A console window must not be able to terminate the tray application.
             IntPtr systemMenu = GetSystemMenu(_window, revert: false);
             if (systemMenu != IntPtr.Zero)
             {
@@ -73,17 +50,10 @@ internal sealed class ConsoleUi : IDisposable
                 _ = DrawMenuBar(_window);
             }
         }
-
-        _ = ShowWindow(_window, SwShowNoActivate);
+        _ = ShowWindow(_window, 4);
         _lastFrame = string.Empty;
     }
 
-    /// <summary>
-    /// Closes the dedicated console window while keeping the tray application alive.
-    /// FreeConsole detaches this process; because this console is created exclusively
-    /// for SokuNet, Windows closes its console window when the process detaches.
-    /// A later Show() call allocates a fresh console window.
-    /// </summary>
     public void CloseWindow()
     {
         if (_allocated)
@@ -92,20 +62,15 @@ internal sealed class ConsoleUi : IDisposable
             try { detached = FreeConsole(); } catch { }
             if (!detached && _window != IntPtr.Zero && IsWindow(_window))
             {
-                // Fallback for an unusual detach failure. Keep the console attached
-                // and its streams/handler intact so a later Show() can reuse it.
-                _ = ShowWindow(_window, SwHide);
+                _ = ShowWindow(_window, 0);
                 return;
             }
         }
-
         if (_controlHandlerInstalled)
         {
             try { _ = SetConsoleCtrlHandler(ControlHandler, add: false); } catch { }
             _controlHandlerInstalled = false;
         }
-
-        // Do not leave Console writers pointing at handles that have just closed.
         try
         {
             Console.SetOut(TextWriter.Null);
@@ -114,7 +79,6 @@ internal sealed class ConsoleUi : IDisposable
         }
         catch (IOException) { }
         catch (InvalidOperationException) { }
-
         _allocated = false;
         _window = IntPtr.Zero;
         _lastFrame = string.Empty;
@@ -133,146 +97,178 @@ internal sealed class ConsoleUi : IDisposable
         bool isPrivate,
         string connectionStatus,
         string roleText,
-        string displayName)
+        string displayName,
+        bool networkConfigured,
+        IReadOnlyList<SokuNetAnnouncement> announcements,
+        PlaytimeSnapshot playtime)
     {
-        if (!IsVisible)
-            return;
+        if (!IsVisible) return;
+        string frame = BuildFrame(friends, gameStatus, isAway, isPrivate, connectionStatus,
+            roleText, displayName, networkConfigured, announcements, playtime);
+        if (frame == _lastFrame) return;
 
-        var builder = new StringBuilder();
-        builder.AppendLine("============================================================");
-        builder.AppendLine("                    SokuNet - 天則網");
-        builder.AppendLine("============================================================");
-        builder.AppendLine();
-        builder.AppendLine("フレンド");
-        builder.AppendLine("------------------------------------------------------------");
-
-        FriendPresence[] ordered = friends
-            .OrderBy(friend => friend.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        if (ordered.Length == 0)
-        {
-            builder.AppendLine("  現在オンラインのフレンドはいません。");
-        }
-        else
-        {
-            foreach (FriendPresence friend in ordered)
-            {
-                string state = friend.IsPrivate
-                    ? "非公開"
-                    : friend.IsAway
-                        ? "離席中"
-                        : friend.GameStatus;
-                builder.Append("  ")
-                    .Append(Fit(friend.DisplayName, 20))
-                    .Append(" : ")
-                    .AppendLine(state);
-            }
-        }
-
-        if (_detailsVisible)
-        {
-            builder.AppendLine();
-            builder.AppendLine("自分の状態");
-            builder.AppendLine("------------------------------------------------------------");
-            builder.Append("  表示名       : ").AppendLine(displayName);
-            builder.Append("  天則状態     : ").AppendLine(gameStatus);
-            builder.Append("  離席中？     : ").AppendLine(isAway ? "はい" : "いいえ");
-            builder.Append("  情報公開     : ").AppendLine(isPrivate ? "非公開" : "公開中");
-            builder.Append("  通信         : ").AppendLine(connectionStatus);
-            builder.Append("  役割         : ").AppendLine(roleText);
-        }
-
-        builder.AppendLine();
-        builder.AppendLine("------------------------------------------------------------");
-        builder.AppendLine("  [S] 自分の状態を表示 / 非表示    [P] 情報公開 / 非公開");
-        builder.AppendLine("  ※ S・P はこのCMDウィンドウを選択している間だけ有効");
-
-        string frame = builder.ToString();
         try
         {
-            // This console is a status display, not a text-entry shell. Discard
-            // queued keystrokes after S/P have been sampled by the app.
             IntPtr inputHandle = GetStdHandle(StdInputHandle);
             if (inputHandle != IntPtr.Zero && inputHandle != new IntPtr(-1))
                 _ = FlushConsoleInputBuffer(inputHandle);
-
-            if (frame == _lastFrame)
-                return;
-
             Console.Clear();
-            Console.Write(frame);
+            if (!networkConfigured)
+            {
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.WriteLine("============================================================");
+                Console.WriteLine("                    SokuNet - 天則網");
+                Console.WriteLine("============================================================");
+                Console.WriteLine();
+                Console.WriteLine("※タスクトレイのアイコンを右クリックし、通信設定を入力してください");
+                Console.ResetColor();
+            }
+            else
+            {
+                DrawConfiguredFrame(friends, gameStatus, isAway, isPrivate, connectionStatus,
+                    roleText, displayName, announcements, playtime);
+            }
             _lastFrame = frame;
         }
         catch (IOException) { }
         catch (InvalidOperationException) { }
     }
 
+    private string BuildFrame(
+        IReadOnlyCollection<FriendPresence> friends, string gameStatus, bool isAway, bool isPrivate,
+        string connectionStatus, string roleText, string displayName, bool networkConfigured,
+        IReadOnlyList<SokuNetAnnouncement> announcements, PlaytimeSnapshot playtime)
+    {
+        var builder = new StringBuilder();
+        builder.Append(networkConfigured).Append('|').Append(_detailsVisible).Append('|')
+            .Append(gameStatus).Append('|').Append(isAway).Append('|').Append(isPrivate).Append('|')
+            .Append(connectionStatus).Append('|').Append(roleText).Append('|').Append(displayName).Append('|')
+            .Append(FormatTime(playtime.GameRunning)).Append('|').Append(FormatTime(playtime.Practice)).Append('|')
+            .Append(FormatTime(playtime.Battle));
+        foreach (SokuNetAnnouncement item in announcements)
+            builder.Append("|A:").Append(item.Id).Append(':').Append(item.Title).Append(':').Append(item.Message).Append(':').Append(item.Url);
+        foreach (FriendPresence friend in friends.OrderBy(f => f.DisplayName, StringComparer.OrdinalIgnoreCase))
+            builder.Append("|F:").Append(friend.PlayerId).Append(':').Append(friend.DisplayName).Append(':')
+                .Append(friend.GameStatus).Append(':').Append(friend.IsAway).Append(':').Append(friend.IsPrivate);
+        return builder.ToString();
+    }
+
+    private void DrawConfiguredFrame(
+        IReadOnlyCollection<FriendPresence> friends, string gameStatus, bool isAway, bool isPrivate,
+        string connectionStatus, string roleText, string displayName,
+        IReadOnlyList<SokuNetAnnouncement> announcements, PlaytimeSnapshot playtime)
+    {
+        WriteLine("============================================================", ConsoleColor.DarkGray);
+        WriteLine("                    SokuNet - 天則網", ConsoleColor.Cyan);
+        WriteLine("============================================================", ConsoleColor.DarkGray);
+
+        WriteLine("");
+        WriteLine("お知らせ", ConsoleColor.Cyan);
+        WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
+        if (announcements.Count == 0)
+            WriteLine("  現在お知らせはありません。", ConsoleColor.DarkGray);
+        else
+        {
+            foreach (SokuNetAnnouncement announcement in announcements)
+            {
+                WriteLine($"  {announcement.Title}: {announcement.Message}", ConsoleColor.Yellow);
+                if (!string.IsNullOrWhiteSpace(announcement.Url))
+                    WriteLine($"    {announcement.Url}", ConsoleColor.DarkGray);
+            }
+        }
+
+        WriteLine("");
+        WriteLine("フレンド", ConsoleColor.White);
+        WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
+        FriendPresence[] ordered = friends.OrderBy(friend => friend.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (ordered.Length == 0)
+            WriteLine("  現在オンラインのフレンドはいません。", ConsoleColor.DarkGray);
+        else
+        {
+            foreach (FriendPresence friend in ordered)
+            {
+                string state = friend.IsPrivate ? "非公開" : friend.IsAway ? "離席中" : friend.GameStatus;
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.Write("  " + Fit(friend.DisplayName, 20) + " : ");
+                Console.ForegroundColor = GetStateColor(state);
+                Console.WriteLine(state);
+            }
+        }
+
+        if (_detailsVisible)
+        {
+            WriteLine("");
+            WriteLine("自分の状態", ConsoleColor.White);
+            WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
+            WriteLine($"  表示名       : {displayName}", ConsoleColor.Gray);
+            WriteLine($"  天則状態     : {gameStatus}", GetStateColor(gameStatus));
+            WriteLine($"  離席中？     : {(isAway ? "はい" : "いいえ")}", isAway ? ConsoleColor.White : ConsoleColor.Gray);
+            WriteLine($"  情報公開     : {(isPrivate ? "非公開" : "公開中")}", isPrivate ? ConsoleColor.DarkGray : ConsoleColor.Gray);
+            WriteLine($"  通信         : {connectionStatus}", ConsoleColor.Gray);
+            WriteLine($"  役割         : {roleText}", ConsoleColor.Gray);
+            WriteLine("");
+            WriteLine($"  天則起動時間 : {FormatTime(playtime.GameRunning)}", ConsoleColor.White);
+            WriteLine($"  総練習時間   : {FormatTime(playtime.Practice)}", ConsoleColor.Green);
+            WriteLine($"  総対戦時間   : {FormatTime(playtime.Battle)}", ConsoleColor.Red);
+        }
+
+        WriteLine("");
+        WriteLine("------------------------------------------------------------", ConsoleColor.DarkGray);
+        WriteLine("  [S] 自分の状態を表示 / 非表示    [P] 情報公開 / 非公開", ConsoleColor.Gray);
+        WriteLine("  ※ S・P はこのCMDウィンドウを選択している間だけ有効", ConsoleColor.DarkGray);
+        Console.ResetColor();
+    }
+
+    private static ConsoleColor GetStateColor(string state) => state switch
+    {
+        "対戦中" => ConsoleColor.Red,
+        "練習中" => ConsoleColor.Green,
+        "観戦中" => ConsoleColor.Blue,
+        "非公開" => ConsoleColor.DarkGray,
+        "離席中" => ConsoleColor.White,
+        _ => ConsoleColor.White
+    };
+
+    private static void WriteLine(string text, ConsoleColor color)
+    {
+        Console.ForegroundColor = color;
+        Console.WriteLine(text);
+    }
+
+    private static string FormatTime(TimeSpan value)
+    {
+        long totalMinutes = Math.Max(0, (long)value.TotalMinutes);
+        return $"{totalMinutes / 60}時間 {totalMinutes % 60:D2}分";
+    }
+
     private static string Fit(string value, int maxLength)
     {
         string clean = new(value.Where(character => !char.IsControl(character)).ToArray());
-        if (clean.Length > maxLength)
-            clean = clean[..maxLength];
+        if (clean.Length > maxLength) clean = clean[..maxLength];
         return clean.PadRight(maxLength);
     }
 
     public void Dispose()
     {
-        if (_disposed)
-            return;
+        if (_disposed) return;
         _disposed = true;
         CloseWindow();
     }
 
     private delegate bool ConsoleControlHandler(uint controlType);
-
     private static bool HandleConsoleControl(uint controlType) => controlType is 0 or 1 or 2;
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetConsoleCtrlHandler(ConsoleControlHandler handler, [MarshalAs(UnmanagedType.Bool)] bool add);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool AllocConsole();
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr GetConsoleWindow();
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr GetStdHandle(int standardHandle);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool FlushConsoleInputBuffer(IntPtr consoleInput);
-
-    [DllImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool FreeConsole();
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindow(IntPtr window);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindowVisible(IntPtr window);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ShowWindow(IntPtr window, int command);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr GetSystemMenu(IntPtr window, [MarshalAs(UnmanagedType.Bool)] bool revert);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeleteMenu(IntPtr menu, uint position, uint flags);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DrawMenuBar(IntPtr window);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetConsoleCtrlHandler(ConsoleControlHandler handler, bool add);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AllocConsole();
+    [DllImport("kernel32.dll")] private static extern IntPtr GetConsoleWindow();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GetStdHandle(int standardHandle);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool FlushConsoleInputBuffer(IntPtr consoleInput);
+    [DllImport("kernel32.dll")] private static extern bool FreeConsole();
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr GetSystemMenu(IntPtr window, bool revert);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool DeleteMenu(IntPtr menu, uint position, uint flags);
+    [DllImport("user32.dll")] private static extern bool DrawMenuBar(IntPtr window);
 }

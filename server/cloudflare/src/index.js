@@ -39,16 +39,26 @@ function constantTimeEquals(left, right) {
 
 export class SokuNetRoom extends DurableObject {
   async fetch(request) {
-    const sessions = this.ctx.getWebSockets();
-    if (sessions.length >= MAX_CLIENTS) {
+    if (this.sessionEntries().length >= MAX_CLIENTS) {
       return new Response("Room is full", { status: 503 });
     }
+
+    // A persisted monotonic join order makes host succession deterministic even
+    // when a participant reconnects immediately or two joins share one millisecond.
+    const joinOrder = await this.ctx.storage.transaction(async (transaction) => {
+      const sequence = (await transaction.get("joinSequence")) ?? 0;
+      await transaction.put("joinSequence", sequence + 1);
+      return Date.now() * 1000 + (sequence % 1000);
+    });
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const attachment = {
       playerId: crypto.randomUUID(),
       joinedAt: Date.now(),
+      joinOrder,
+      roleIndex: -1,
+      departed: false,
       displayName: "",
       gameStatus: "",
       isAway: false,
@@ -91,10 +101,12 @@ export class SokuNetRoom extends DurableObject {
         .map((entry) => publicPresence(entry.attachment));
       const own = entries.find((entry) => entry.ws === ws);
       if (own) {
-        const role = this.calculateRole(entries, ws);
+        const roleIndex = this.calculateRoleIndex(entries, ws);
+        const role = roleIndex === 0 ? "host" : "client";
         attachment.role = role;
+        attachment.roleIndex = roleIndex;
         ws.serializeAttachment(attachment);
-        send(ws, { type: "welcome", role, peers });
+        send(ws, { type: "welcome", role, roleIndex, peers });
       }
 
       this.updateRoles();
@@ -139,49 +151,59 @@ export class SokuNetRoom extends DurableObject {
   }
 
   async webSocketClose(ws, code, reason) {
-    const attachment = ws.deserializeAttachment();
-    if (attachment?.playerId) {
-      this.broadcast({
-        type: "peer_left",
-        playerId: attachment.playerId,
-        displayName: attachment.displayName || "参加者",
-      }, ws);
-    }
+    this.notifyDeparture(ws);
     try { ws.close(code, reason); } catch { }
     this.updateRoles(ws);
   }
 
   async webSocketError(ws) {
+    this.notifyDeparture(ws);
+    this.updateRoles(ws);
+  }
+
+  notifyDeparture(ws) {
     const attachment = ws.deserializeAttachment();
-    if (attachment?.playerId) {
+    if (!attachment || attachment.departed) return;
+    attachment.departed = true;
+    try { ws.serializeAttachment(attachment); } catch { }
+    if (attachment.playerId) {
       this.broadcast({
         type: "peer_left",
         playerId: attachment.playerId,
         displayName: attachment.displayName || "参加者",
       }, ws);
     }
-    this.updateRoles(ws);
   }
 
   sessionEntries(excluded = null) {
     return this.ctx.getWebSockets()
       .filter((ws) => ws !== excluded)
       .map((ws) => ({ ws, attachment: ws.deserializeAttachment() ?? {} }))
-      .sort((a, b) => (a.attachment.joinedAt ?? 0) - (b.attachment.joinedAt ?? 0));
+      .filter((entry) => !entry.attachment.departed)
+      .sort((a, b) => {
+        const aOrder = a.attachment.joinOrder ?? ((a.attachment.joinedAt ?? 0) * 1000);
+        const bOrder = b.attachment.joinOrder ?? ((b.attachment.joinedAt ?? 0) * 1000);
+        const orderDifference = aOrder - bOrder;
+        return orderDifference || String(a.attachment.playerId).localeCompare(String(b.attachment.playerId));
+      });
   }
 
-  calculateRole(entries, target) {
-    return entries.findIndex((entry) => entry.ws === target) === 0 ? "host" : "client";
+  calculateRoleIndex(entries, target) {
+    return entries.findIndex((entry) => entry.ws === target);
   }
 
   updateRoles(excluded = null) {
     const entries = this.sessionEntries(excluded);
     entries.forEach(({ ws, attachment }, index) => {
       const role = index === 0 ? "host" : "client";
-      if (attachment.role !== role) {
+      if (attachment.role !== role || attachment.roleIndex !== index) {
         attachment.role = role;
-        ws.serializeAttachment(attachment);
-        send(ws, { type: "role", role });
+        attachment.roleIndex = index;
+        try {
+          ws.serializeAttachment(attachment);
+          send(ws, { type: "role", role, roleIndex: index });
+        } catch { }
+
       }
     });
   }
