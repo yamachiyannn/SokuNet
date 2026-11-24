@@ -10,7 +10,9 @@ internal sealed class NetworkSettingsForm : Form
     private readonly TextBox _roomCode = new();
 
     public string DisplayName => _displayName.Text.Trim();
-    public string RelayUrl => _relayUrl.Text.Trim().TrimEnd('/');
+    public string RelayUrl => string.IsNullOrWhiteSpace(_relayUrl.Text)
+        ? AppSettings.DefaultRelayUrl
+        : _relayUrl.Text.Trim().TrimEnd('/');
     public string RoomCode => _roomCode.Text.Trim();
 
     public NetworkSettingsForm(AppSettings settings)
@@ -41,7 +43,9 @@ internal sealed class NetworkSettingsForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
         _displayName.Text = settings.DisplayName;
-        _relayUrl.Text = settings.RelayUrl;
+        _relayUrl.Text = string.IsNullOrWhiteSpace(settings.RelayUrl)
+            ? AppSettings.DefaultRelayUrl
+            : settings.RelayUrl;
         _roomCode.Text = settings.RoomCode;
 
         AddField(layout, 0, "表示名", _displayName);
@@ -50,7 +54,7 @@ internal sealed class NetworkSettingsForm : Form
 
         var help = new Label
         {
-            Text = "全員が同じ中継サーバーURLと合言葉を設定してください。\n表示名・URL・合言葉のどれかが未設定なら通信しません。\n合言葉はサーバー側の秘密情報と一致させます。",
+            Text = "表示名: 自由に設定してください（例 yamachiyannn）\nURL: 指定がない限り標準のものを使用\n合言葉: @yamachiyannn が伝えたもの以外では動作しません",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.DimGray

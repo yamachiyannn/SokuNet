@@ -1,14 +1,20 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace SokuNet;
 
 internal sealed class AppSettings
 {
+    public const string DefaultRelayUrl = "https://sokunet-relay.sokunet.workers.dev";
+
     public bool PrivateMode { get; set; }
     public bool NotificationSoundEnabled { get; set; } = true;
+    public int NotificationDurationSeconds { get; set; } = 3;
     public bool StartWithWindows { get; set; }
+    public int ConsoleWindowWidth { get; set; }
+    public int ConsoleWindowHeight { get; set; }
     public string DisplayName { get; set; } = string.Empty;
-    public string RelayUrl { get; set; } = string.Empty;
+    public string RelayUrl { get; set; } = DefaultRelayUrl;
     public string RoomCode { get; set; } = string.Empty;
 }
 
@@ -38,7 +44,17 @@ internal sealed class SettingsManager : IDisposable
             AppSettings? loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(ConfigPath), JsonOptions);
             loaded ??= new AppSettings();
             loaded.DisplayName = CleanSetting(loaded.DisplayName, string.Empty, 24);
-            loaded.RelayUrl ??= string.Empty;
+            loaded.NotificationDurationSeconds = Math.Clamp(loaded.NotificationDurationSeconds, 1, 30);
+            EnsureNotificationDurationSettingExists(loaded.NotificationDurationSeconds);
+
+            // Use the official relay by default for first launches and older/blank configs.
+            // Explicit non-empty custom URLs are preserved.
+            if (string.IsNullOrWhiteSpace(loaded.RelayUrl))
+                loaded.RelayUrl = AppSettings.DefaultRelayUrl;
+            else
+                loaded.RelayUrl = loaded.RelayUrl.Trim().TrimEnd('/');
+            EnsureDefaultRelayUrlSettingExists();
+
             loaded.RoomCode ??= string.Empty;
             return loaded;
         }
@@ -62,6 +78,70 @@ internal sealed class SettingsManager : IDisposable
         string json = JsonSerializer.Serialize(settings, JsonOptions);
         File.WriteAllText(temporaryPath, json);
         File.Move(temporaryPath, ConfigPath, overwrite: true);
+    }
+
+    private void EnsureNotificationDurationSettingExists(int defaultValue)
+    {
+        try
+        {
+            JsonNode? root = JsonNode.Parse(File.ReadAllText(ConfigPath));
+            if (root is not JsonObject config)
+                return;
+
+            bool alreadyExists = config.Any(property =>
+                string.Equals(property.Key, nameof(AppSettings.NotificationDurationSeconds), StringComparison.OrdinalIgnoreCase));
+            if (alreadyExists)
+                return;
+
+            // Migrate older config.json files without discarding unrelated/custom keys.
+            config[nameof(AppSettings.NotificationDurationSeconds)] = defaultValue;
+            string temporaryPath = ConfigPath + ".tmp";
+            File.WriteAllText(temporaryPath, config.ToJsonString(JsonOptions));
+            File.Move(temporaryPath, ConfigPath, overwrite: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // The setting still uses its default even if an old config cannot be upgraded.
+        }
+    }
+
+
+    private void EnsureDefaultRelayUrlSettingExists()
+    {
+        try
+        {
+            JsonNode? root = JsonNode.Parse(File.ReadAllText(ConfigPath));
+            if (root is not JsonObject config)
+                return;
+
+            string? existingKey = config.Select(property => property.Key)
+                .FirstOrDefault(key => string.Equals(key, nameof(AppSettings.RelayUrl), StringComparison.OrdinalIgnoreCase));
+
+            if (existingKey is not null)
+            {
+                string? existingValue = null;
+                try { existingValue = config[existingKey]?.GetValue<string>(); }
+                catch (InvalidOperationException) { }
+
+                if (!string.IsNullOrWhiteSpace(existingValue))
+                    return;
+
+                config[existingKey] = AppSettings.DefaultRelayUrl;
+            }
+            else
+            {
+                // Older configs may predate RelayUrl. Preserve all unrelated keys.
+                config[nameof(AppSettings.RelayUrl)] = AppSettings.DefaultRelayUrl;
+            }
+
+            string temporaryPath = ConfigPath + ".tmp";
+            File.WriteAllText(temporaryPath, config.ToJsonString(JsonOptions));
+            File.Move(temporaryPath, ConfigPath, overwrite: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // The in-memory setting still uses the official relay if the config cannot be migrated.
+        }
     }
 
     private static string CleanSetting(string? value, string fallback, int maxLength)

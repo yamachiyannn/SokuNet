@@ -18,3 +18,9 @@ config.json
 **/config.json
 config.json.tmp
 **/config.json.tmp
+
+# Local-only playtime and announcement cache
+playtime.json
+playtime.json.tmp
+announcements-cache.json
+announcements-cache.json.tmp

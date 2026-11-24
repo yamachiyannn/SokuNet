@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Net.Http;
@@ -41,12 +42,14 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
     private readonly ConcurrentQueue<RemoteNotification> _localNotifications = new();
     private IReadOnlyList<SokuNetAnnouncement> _announcementSnapshot = Array.Empty<SokuNetAnnouncement>();
     private Task? _announcementTask;
-    private readonly ConsoleUi _consoleUi = new();
+    private readonly ConsoleUi _consoleUi;
     private readonly Icon _applicationIcon;
     private readonly OverlayForm _overlay;
     private readonly NotifyIcon _trayIcon;
     private readonly ToolStripMenuItem _startupMenuItem;
     private readonly ToolStripMenuItem _soundMenuItem;
+    private readonly ToolStripMenuItem _announcementLinksMenuItem;
+    private IReadOnlyList<SokuNetAnnouncement>? _menuAnnouncementSnapshot;
     private readonly System.Windows.Forms.Timer _timer;
     private NetworkService? _network;
     private GameMonitorResult _game = GameMonitorResult.NotRunning;
@@ -62,18 +65,25 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
     public SokuNetApplicationContext()
     {
         _settings = _settingsStore.Load();
+        _consoleUi = new ConsoleUi(_settings, _settingsStore.Save);
         _away = new AwayTracker(TimeSpan.FromMinutes(5));
         _playtime = new PlaytimeTracker(_settingsStore.AppDirectory);
         _announcementService = new AnnouncementService(_settingsStore.AppDirectory);
         _announcementSnapshot = _announcementService.GetAnnouncements();
         _applicationIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath)
             ?? (Icon)SystemIcons.Application.Clone();
-        _overlay = new OverlayForm(_applicationIcon, _settings.NotificationSoundEnabled);
+        _overlay = new OverlayForm(_applicationIcon, _settings.NotificationSoundEnabled, _settings.NotificationDurationSeconds);
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("通信設定", null, (_, _) => OpenNetworkSettings());
         menu.Items.Add("設定ファイルを開く", null, (_, _) => OpenConfigFile());
         menu.Items.Add("設定フォルダーを開く", null, (_, _) => OpenConfigFolder());
+
+        _announcementLinksMenuItem = new ToolStripMenuItem("お知らせのリンク");
+        menu.Items.Add(_announcementLinksMenuItem);
+        menu.Items.Add("GitHub Releasesを開く", null, (_, _) =>
+            OpenExternalUrl("https://github.com/yamachiyannn/SokuNet/releases"));
+        RefreshAnnouncementLinks(_announcementSnapshot);
         menu.Items.Add(new ToolStripSeparator());
 
         _soundMenuItem = new ToolStripMenuItem("通知音を有効にする")
@@ -125,6 +135,8 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
 
     private void OnTimerTick(object? sender, EventArgs e)
     {
+        RefreshAnnouncementLinks(Volatile.Read(ref _announcementSnapshot));
+
         long now = Stopwatch.GetTimestamp();
         if (now >= _nextGamePoll)
         {
@@ -234,13 +246,77 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
             AnnouncementResult result = await _announcementService.CheckAsync(_shutdown.Token).ConfigureAwait(false);
             Volatile.Write(ref _announcementSnapshot, result.Announcements);
             if (!string.IsNullOrWhiteSpace(result.ChangeNotification))
-                _localNotifications.Enqueue(new RemoteNotification(result.ChangeNotification));
+                _localNotifications.Enqueue(new RemoteNotification(result.ChangeNotification, NotificationCategory.Announcement));
         }
         catch (OperationCanceledException) { }
         catch (HttpRequestException) { }
         catch (InvalidDataException) { }
         catch (IOException) { }
         catch (JsonException) { }
+    }
+
+    private void RefreshAnnouncementLinks(IReadOnlyList<SokuNetAnnouncement> announcements)
+    {
+        if (ReferenceEquals(_menuAnnouncementSnapshot, announcements))
+            return;
+
+        _menuAnnouncementSnapshot = announcements;
+        _announcementLinksMenuItem.DropDownItems.Clear();
+
+        int linkCount = 0;
+        foreach (SokuNetAnnouncement announcement in announcements)
+        {
+            if (!TryGetHttpUri(announcement.Url, out Uri? uri) || uri is null)
+                continue;
+
+            string url = uri.AbsoluteUri;
+            var item = new ToolStripMenuItem($"{announcement.Title} を開く");
+            item.Click += (_, _) => OpenExternalUrl(url);
+            _announcementLinksMenuItem.DropDownItems.Add(item);
+            linkCount++;
+        }
+
+        if (linkCount == 0)
+        {
+            _announcementLinksMenuItem.DropDownItems.Add(new ToolStripMenuItem("リンク付きのお知らせはありません")
+            {
+                Enabled = false
+            });
+        }
+        _announcementLinksMenuItem.Enabled = true;
+    }
+
+    private static bool TryGetHttpUri(string? value, out Uri? uri)
+    {
+        uri = null;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? parsed) ||
+            (parsed.Scheme != Uri.UriSchemeHttps && parsed.Scheme != Uri.UriSchemeHttp) ||
+            string.IsNullOrWhiteSpace(parsed.Host) ||
+            !string.IsNullOrEmpty(parsed.UserInfo))
+            return false;
+
+        uri = parsed;
+        return true;
+    }
+
+    private static void OpenExternalUrl(string url)
+    {
+        if (!TryGetHttpUri(url, out Uri? uri) || uri is null)
+            return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception exception) when (exception is Win32Exception or InvalidOperationException or
+                                          IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            MessageBox.Show($"リンクを開けませんでした。\n{uri.AbsoluteUri}",
+                "SokuNet", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void QueueHourlyNotifications(long now)

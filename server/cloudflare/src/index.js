@@ -95,9 +95,13 @@ export class SokuNetRoom extends DurableObject {
       applyPresence(attachment, message);
       ws.serializeAttachment(attachment);
 
-      const entries = this.sessionEntries();
+      // Only participants that completed the hello handshake take part in
+      // host/client election. Newly accepted sockets have an empty displayName
+      // until hello arrives; counting them can mislabel the sole registered
+      // participant as a client while the visible roster is still empty.
+      const entries = this.participantEntries();
       const peers = entries
-        .filter((entry) => entry.ws !== ws && entry.attachment.displayName)
+        .filter((entry) => entry.ws !== ws)
         .map((entry) => publicPresence(entry.attachment));
       const own = entries.find((entry) => entry.ws === ws);
       if (own) {
@@ -166,11 +170,13 @@ export class SokuNetRoom extends DurableObject {
     if (!attachment || attachment.departed) return;
     attachment.departed = true;
     try { ws.serializeAttachment(attachment); } catch { }
-    if (attachment.playerId) {
+    // A socket disconnected before hello was never in the friend roster.
+    // Avoid emitting a synthetic "参加者 left" event for that handshake.
+    if (attachment.playerId && attachment.displayName) {
       this.broadcast({
         type: "peer_left",
         playerId: attachment.playerId,
-        displayName: attachment.displayName || "参加者",
+        displayName: attachment.displayName,
       }, ws);
     }
   }
@@ -188,12 +194,20 @@ export class SokuNetRoom extends DurableObject {
       });
   }
 
+  // Only sockets that completed hello (and therefore have a display name)
+  // participate in host/client election. Keep sessionEntries() for raw capacity.
+  participantEntries(excluded = null) {
+    return this.sessionEntries(excluded).filter(({ attachment }) =>
+      typeof attachment.displayName === "string" && attachment.displayName.trim().length > 0
+    );
+  }
+
   calculateRoleIndex(entries, target) {
     return entries.findIndex((entry) => entry.ws === target);
   }
 
   updateRoles(excluded = null) {
-    const entries = this.sessionEntries(excluded);
+    const entries = this.participantEntries(excluded);
     entries.forEach(({ ws, attachment }, index) => {
       const role = index === 0 ? "host" : "client";
       if (attachment.role !== role || attachment.roleIndex !== index) {

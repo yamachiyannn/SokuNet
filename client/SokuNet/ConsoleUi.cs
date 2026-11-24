@@ -20,6 +20,15 @@ internal sealed class ConsoleUi : IDisposable
     private bool _controlHandlerInstalled;
     private static readonly ConsoleControlHandler ControlHandler = HandleConsoleControl;
 
+    private readonly AppSettings _settings;
+    private readonly Action<AppSettings> _saveSettings;
+
+    public ConsoleUi(AppSettings settings, Action<AppSettings> saveSettings)
+    {
+        _settings = settings;
+        _saveSettings = saveSettings;
+    }
+
     public bool IsVisible => _window != IntPtr.Zero && IsWindow(_window) && IsWindowVisible(_window);
     public bool IsFocused => _window != IntPtr.Zero && IsWindow(_window) && GetForegroundWindow() == _window;
 
@@ -45,6 +54,8 @@ internal sealed class ConsoleUi : IDisposable
             }
             catch (IOException) { }
 
+            TryRestoreWindowSize();
+
             IntPtr systemMenu = GetSystemMenu(_window, revert: false);
             if (systemMenu != IntPtr.Zero)
             {
@@ -64,6 +75,7 @@ internal sealed class ConsoleUi : IDisposable
     {
         if (_allocated)
         {
+            RememberWindowSize();
             bool detached = false;
             try { detached = FreeConsole(); } catch { }
             if (!detached && _window != IntPtr.Zero && IsWindow(_window))
@@ -207,7 +219,7 @@ internal sealed class ConsoleUi : IDisposable
             WriteLine("自分の状態", ConsoleColor.White);
             WriteLine("------------------------------------------------------------", ConsoleColor.White);
             WriteLine($"  表示名       : {displayName}", ConsoleColor.Gray);
-            WriteLine($"  天則状態     : {gameStatus}", GetStateColor(gameStatus));
+            WriteLine($"  天則状態     : {gameStatus}", ConsoleColor.Gray);
             WriteLine($"  離席中？     : {(isAway ? "はい" : "いいえ")}", isAway ? ConsoleColor.White : ConsoleColor.Gray);
             WriteLine($"  情報公開     : {(isPrivate ? "非公開" : "公開中")}", isPrivate ? ConsoleColor.DarkGray : ConsoleColor.Gray);
             WriteLine($"  通信         : {connectionStatus}", ConsoleColor.Gray);
@@ -234,6 +246,69 @@ internal sealed class ConsoleUi : IDisposable
         "離席中" => ConsoleColor.White,
         _ => ConsoleColor.White
     };
+
+    private void TryRestoreWindowSize()
+    {
+        if (_settings.ConsoleWindowWidth <= 0 || _settings.ConsoleWindowHeight <= 0)
+            return;
+
+        try
+        {
+            int maxWidth = Console.LargestWindowWidth;
+            int maxHeight = Console.LargestWindowHeight;
+            if (maxWidth < 40 || maxHeight < 10)
+                return;
+
+            int width = Math.Clamp(_settings.ConsoleWindowWidth, 40, maxWidth);
+            int height = Math.Clamp(_settings.ConsoleWindowHeight, 10, maxHeight);
+
+            if (Console.BufferWidth < width)
+                Console.BufferWidth = width;
+            if (Console.BufferHeight < height)
+                Console.BufferHeight = height;
+
+            Console.SetWindowSize(width, height);
+        }
+        catch (Exception exception) when (exception is IOException
+            or ArgumentOutOfRangeException
+            or InvalidOperationException
+            or PlatformNotSupportedException)
+        {
+            // Keep the console's host-selected size if the saved size is not
+            // supported by the current display or console host.
+        }
+    }
+
+    private void RememberWindowSize()
+    {
+        if (_window == IntPtr.Zero || !IsWindow(_window))
+            return;
+
+        try
+        {
+            int width = Console.WindowWidth;
+            int height = Console.WindowHeight;
+            if (width < 40 || height < 10)
+                return;
+            if (_settings.ConsoleWindowWidth == width && _settings.ConsoleWindowHeight == height)
+                return;
+
+            _settings.ConsoleWindowWidth = width;
+            _settings.ConsoleWindowHeight = height;
+            try { _saveSettings(_settings); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // The current session continues even if the size cannot be saved.
+            }
+        }
+        catch (Exception exception) when (exception is IOException
+            or ArgumentOutOfRangeException
+            or InvalidOperationException
+            or PlatformNotSupportedException)
+        {
+            // The console may already be detaching or unavailable.
+        }
+    }
 
     private static void DisableQuickEditMode()
     {

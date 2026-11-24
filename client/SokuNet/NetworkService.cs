@@ -19,7 +19,14 @@ internal sealed record FriendPresence(
     bool IsAway,
     bool IsPrivate);
 
-internal sealed record RemoteNotification(string Message);
+internal enum NotificationCategory
+{
+    Friend,
+    Announcement,
+    System
+}
+
+internal sealed record RemoteNotification(string Message, NotificationCategory Category = NotificationCategory.System);
 
 /// <summary>
 /// WebSocket relay client. The first connection is labelled host by the relay;
@@ -373,22 +380,22 @@ internal sealed class NetworkService : IDisposable
         if (previous.GameStatus == "未起動" && next.GameStatus != "未起動")
         {
             string startedState = next.GameStatus == "取得不可" ? "状態取得中" : FormatState(next);
-            _notifications.Enqueue(new RemoteNotification($"{name} が東方非想天則を始めました（{startedState}）"));
+            _notifications.Enqueue(new RemoteNotification($"{name} が東方非想天則を始めました（{startedState}）", NotificationCategory.Friend));
         }
         else if (next.GameStatus == "未起動" &&
                  previous.GameStatus is not ("未起動" or "取得不可"))
         {
-            _notifications.Enqueue(new RemoteNotification($"{name}：天則を終了しました"));
+            _notifications.Enqueue(new RemoteNotification($"{name}：天則を終了しました", NotificationCategory.Friend));
         }
         else if (previous.GameStatus != "取得不可" && previous.GameStatus != next.GameStatus)
         {
-            _notifications.Enqueue(new RemoteNotification($"{name}：{FormatState(next)}"));
+            _notifications.Enqueue(new RemoteNotification($"{name}：{FormatState(next)}", NotificationCategory.Friend));
         }
         else if (previous.IsAway != next.IsAway)
         {
             _notifications.Enqueue(new RemoteNotification(next.IsAway
                 ? $"{name}：離席中になりました"
-                : $"{name}：戻りました"));
+                : $"{name}：戻りました", NotificationCategory.Friend));
         }
     }
 

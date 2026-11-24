@@ -58,7 +58,7 @@ internal sealed class AnnouncementService : IDisposable
             List<SokuNetAnnouncement> cleaned = (document.Announcements ?? [])
                 .Where(item => item is not null)
                 .Select(item => new SokuNetAnnouncement(
-                    Clean(item.Id, 64), Clean(item.Title, 80), Clean(item.Message, 240), Clean(item.Url, 256)))
+                    Clean(item.Id, 64), Clean(item.Title, 80), Clean(item.Message, 240), CleanHttpUrl(item.Url)))
                 .Where(item => item.Id.Length > 0 && item.Title.Length > 0 && item.Message.Length > 0)
                 .GroupBy(item => item.Id, StringComparer.Ordinal)
                 .Select(group => group.Last())
@@ -76,7 +76,7 @@ internal sealed class AnnouncementService : IDisposable
                     previous.Title != item.Title || previous.Message != item.Message || previous.Url != item.Url);
                 notification = changed is null
                     ? "SokuNetのお知らせが更新されました"
-                    : $"お知らせ: {changed.Title}";
+                    : changed.Title;
             }
 
             try { SaveCache(hash, cleaned); }
@@ -129,6 +129,24 @@ internal sealed class AnnouncementService : IDisposable
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
         string clean = new string(value.Where(character => !char.IsControl(character)).ToArray()).Trim();
         return clean.Length <= maxLength ? clean : clean[..maxLength];
+    }
+
+    private static string? CleanHttpUrl(string? value)
+    {
+        string clean = Clean(value, 256);
+        if (clean.Length == 0)
+            return null;
+
+        // Only ordinary web links are accepted from the public announcement feed.
+        // This prevents javascript:, file:, and other non-browser schemes from
+        // being passed to the Windows shell.
+        if (!Uri.TryCreate(clean, UriKind.Absolute, out Uri? uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) ||
+            string.IsNullOrWhiteSpace(uri.Host) ||
+            !string.IsNullOrEmpty(uri.UserInfo))
+            return null;
+
+        return uri.AbsoluteUri;
     }
 
     public void Dispose()
