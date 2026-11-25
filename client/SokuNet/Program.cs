@@ -81,8 +81,7 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
 
         _announcementLinksMenuItem = new ToolStripMenuItem("お知らせのリンク");
         menu.Items.Add(_announcementLinksMenuItem);
-        menu.Items.Add("GitHub Releasesを開く", null, (_, _) =>
-            OpenExternalUrl("https://github.com/yamachiyannn/SokuNet/releases"));
+        menu.Items.Add("管理者用", null, async (_, _) => await OpenAdminWindowAsync());
         RefreshAnnouncementLinks(_announcementSnapshot);
         menu.Items.Add(new ToolStripSeparator());
 
@@ -425,6 +424,84 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         catch (UnauthorizedAccessException) { return false; }
         catch (IOException) { return false; }
         catch (System.Security.SecurityException) { return false; }
+    }
+
+    private async Task OpenAdminWindowAsync()
+    {
+        string adminPassword;
+        using (var passwordDialog = new AdminPasswordDialog())
+        {
+            if (passwordDialog.ShowDialog() != DialogResult.OK)
+                return;
+            adminPassword = passwordDialog.TakePassword();
+        }
+
+        if (string.IsNullOrWhiteSpace(adminPassword))
+            return;
+
+        // Always show both confirmation windows before sending, regardless of whether
+        // the password will ultimately be accepted. This lets the user review the
+        // exact plain-text value and understand that failed values are recoverable.
+        DialogResult firstConfirmation = MessageBox.Show(
+            $"確認 1/2\n\n次の文字列をSokuNet管理者認証として送信します。\n\n【{adminPassword}】\n\nこの内容でよろしいですか？",
+            "SokuNet 管理者認証 - 送信確認 1/2",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (firstConfirmation != DialogResult.Yes)
+        {
+            adminPassword = string.Empty;
+            return;
+        }
+
+        DialogResult secondConfirmation = MessageBox.Show(
+            "確認 2/2\n\n認証に失敗した場合、この入力文字列はAES-GCMで暗号化して保存され、管理者用の認証失敗履歴で復元表示されます。\n認証に成功した場合は保存されません。\n\nSokuNet管理者用の文字列であることを確認しましたか？",
+            "SokuNet 管理者認証 - 最終確認 2/2",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (secondConfirmation != DialogResult.Yes)
+        {
+            adminPassword = string.Empty;
+            return;
+        }
+
+        try
+        {
+            IReadOnlyList<AdminParticipant> participants = await AdminService.GetParticipantsAsync(
+                _settings.RelayUrl, adminPassword, _settings.InstallationId, _settings.DisplayName, CancellationToken.None);
+            using var form = new AdminParticipantsForm(
+                participants,
+                cancellationToken => AdminService.GetParticipantsAsync(
+                    _settings.RelayUrl, adminPassword, _settings.InstallationId, _settings.DisplayName, cancellationToken),
+                cancellationToken => AdminService.GetAuthFailuresAsync(
+                    _settings.RelayUrl, adminPassword, _settings.InstallationId, _settings.DisplayName, cancellationToken));
+            form.ShowDialog();
+        }
+        catch (AdminAuthenticationException)
+        {
+            MessageBox.Show("管理者用パスワードが違います。失敗した入力文字列は暗号化して記録され、管理者用の認証失敗履歴から復元表示できます。",
+                "SokuNet 管理者用", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (AdminNotConfiguredException)
+        {
+            MessageBox.Show("サーバー側に管理者用パスワードが設定されていません。GitHub Secrets の SOKUNET_ADMIN_SECRET を登録して、Deploy SokuNet relay を実行してください。",
+                "SokuNet 管理者用", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (AdminEndpointUnavailableException)
+        {
+            MessageBox.Show("管理者用APIが見つかりません。Cloudflare Workerのデプロイが完了しているか確認してください。",
+                "SokuNet 管理者用", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or UriFormatException or JsonException)
+        {
+            MessageBox.Show($"利用者一覧を取得できませんでした。\n{exception.Message}",
+                "SokuNet 管理者用", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            adminPassword = string.Empty;
+        }
     }
 
     private void OpenConfigFile()

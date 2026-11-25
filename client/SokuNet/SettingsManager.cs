@@ -14,6 +14,8 @@ internal sealed class AppSettings
     public int ConsoleWindowWidth { get; set; }
     public int ConsoleWindowHeight { get; set; }
     public string DisplayName { get; set; } = string.Empty;
+    // Random per-installation ID. It is not a hardware identifier.
+    public string InstallationId { get; set; } = Guid.NewGuid().ToString("N");
     public string RelayUrl { get; set; } = DefaultRelayUrl;
     public string RoomCode { get; set; } = string.Empty;
 }
@@ -44,6 +46,9 @@ internal sealed class SettingsManager : IDisposable
             AppSettings? loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(ConfigPath), JsonOptions);
             loaded ??= new AppSettings();
             loaded.DisplayName = CleanSetting(loaded.DisplayName, string.Empty, 24);
+            if (!Guid.TryParseExact(loaded.InstallationId, "N", out _))
+                loaded.InstallationId = Guid.NewGuid().ToString("N");
+            EnsureInstallationIdSettingExists(loaded.InstallationId);
             loaded.NotificationDurationSeconds = Math.Clamp(loaded.NotificationDurationSeconds, 1, 30);
             EnsureNotificationDurationSettingExists(loaded.NotificationDurationSeconds);
 
@@ -141,6 +146,41 @@ internal sealed class SettingsManager : IDisposable
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
             // The in-memory setting still uses the official relay if the config cannot be migrated.
+        }
+    }
+
+    private void EnsureInstallationIdSettingExists(string installationId)
+    {
+        try
+        {
+            JsonNode? root = JsonNode.Parse(File.ReadAllText(ConfigPath));
+            if (root is not JsonObject config)
+                return;
+
+            string? existingKey = config.Select(property => property.Key)
+                .FirstOrDefault(key => string.Equals(key, nameof(AppSettings.InstallationId), StringComparison.OrdinalIgnoreCase));
+            if (existingKey is not null)
+            {
+                string? existingValue = null;
+                try { existingValue = config[existingKey]?.GetValue<string>(); }
+                catch (InvalidOperationException) { }
+                if (string.Equals(existingValue, installationId, StringComparison.OrdinalIgnoreCase))
+                    return;
+                config[existingKey] = installationId;
+            }
+            else
+            {
+                // Add the ID to older configs without removing user-defined settings.
+                config[nameof(AppSettings.InstallationId)] = installationId;
+            }
+
+            string temporaryPath = ConfigPath + ".tmp";
+            File.WriteAllText(temporaryPath, config.ToJsonString(JsonOptions));
+            File.Move(temporaryPath, ConfigPath, overwrite: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // Keep the in-memory ID even if the existing config cannot be upgraded.
         }
     }
 

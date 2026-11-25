@@ -42,6 +42,7 @@ internal sealed class NetworkService : IDisposable
     private readonly Uri? _endpoint;
     private readonly string _roomCode;
     private readonly string _displayName;
+    private readonly string _installationId;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly CancellationToken _shutdownToken;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -66,6 +67,9 @@ internal sealed class NetworkService : IDisposable
         _shutdownToken = _shutdown.Token;
         _roomCode = settings.RoomCode?.Trim() ?? string.Empty;
         _displayName = CleanText(settings.DisplayName, 24);
+        _installationId = Guid.TryParseExact(settings.InstallationId, "N", out _)
+            ? settings.InstallationId
+            : Guid.NewGuid().ToString("N");
         _currentPresence = initialPresence with { DisplayName = _displayName };
         _hasPresence = true;
 
@@ -201,6 +205,7 @@ internal sealed class NetworkService : IDisposable
             {
                 Type = isInitial ? "hello" : "hide",
                 DisplayName = _displayName,
+                InstallationId = isInitial ? _installationId : null,
                 IsPrivate = true
             };
         }
@@ -210,6 +215,7 @@ internal sealed class NetworkService : IDisposable
             {
                 Type = isInitial ? "hello" : "presence",
                 DisplayName = _displayName,
+                InstallationId = isInitial ? _installationId : null,
                 GameStatus = presence.GameStatus,
                 IsAway = presence.IsAway,
                 IsPrivate = false
@@ -456,6 +462,7 @@ internal sealed class NetworkService : IDisposable
     {
         [JsonPropertyName("type")] public string Type { get; init; } = "";
         [JsonPropertyName("displayName")] public string? DisplayName { get; init; }
+        [JsonPropertyName("installationId")] public string? InstallationId { get; init; }
         [JsonPropertyName("gameStatus")] public string? GameStatus { get; init; }
         [JsonPropertyName("isAway")] public bool? IsAway { get; init; }
         [JsonPropertyName("isPrivate")] public bool? IsPrivate { get; init; }

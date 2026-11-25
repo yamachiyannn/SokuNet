@@ -23,7 +23,7 @@ internal sealed class NetworkSettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(520, 300);
+        ClientSize = new Size(520, 330);
         Font = new Font("Meiryo UI", 9.5f);
 
         var layout = new TableLayoutPanel
@@ -50,11 +50,11 @@ internal sealed class NetworkSettingsForm : Form
 
         AddField(layout, 0, "表示名", _displayName);
         AddField(layout, 1, "中継サーバーURL", _relayUrl);
-        AddField(layout, 2, "グループ合言葉", _roomCode);
+        AddField(layout, 2, "合言葉", _roomCode);
 
         var help = new Label
         {
-            Text = "表示名: 自由に設定してください（例 yamachiyannn）\nURL: 指定がない限り標準のものを使用\n合言葉: @yamachiyannn が伝えたもの以外では動作しません",
+            Text = "表示名: 自由に設定してください（例 yamachiyannn）\nURL: 指定がない限り変更しないでください\n合言葉: 某所に書いてあるものを入力してください\n\n表示名と初回・最終接続日時は、非公開設定中も管理者用一覧に記録されます。",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.DimGray
@@ -117,7 +117,7 @@ internal sealed class NetworkSettingsForm : Form
                 (c >= '0' && c <= '9') || c is '-' or '_');
             if (!safeCode)
             {
-                MessageBox.Show(this, "グループ合言葉は16文字以上の半角英数字・ハイフン・アンダースコアで入力してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, "合言葉は16文字以上の半角英数字・ハイフン・アンダースコアで入力してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
         }
