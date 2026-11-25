@@ -29,7 +29,17 @@ jobs:
         env:
           SOKUNET_ROOM_SECRET: ${{ secrets.SOKUNET_ROOM_SECRET }}
 
-      - name: Deploy Worker and apply private room secret
+      - name: Validate the administrator secret
+        shell: bash
+        run: |
+          if [[ -z "$SOKUNET_ADMIN_SECRET" || ${#SOKUNET_ADMIN_SECRET} -lt 24 || ! "$SOKUNET_ADMIN_SECRET" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            echo "::error::SOKUNET_ADMIN_SECRET must be at least 24 ASCII letters, digits, hyphens, or underscores."
+            exit 1
+          fi
+        env:
+          SOKUNET_ADMIN_SECRET: ${{ secrets.SOKUNET_ADMIN_SECRET }}
+
+      - name: Deploy Worker and apply private secrets
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -39,5 +49,7 @@ jobs:
           command: deploy
           postCommands: |
             printf '%s' "$SOKUNET_ROOM_SECRET" | npx wrangler secret put SOKUNET_ROOM_SECRET
+            printf '%s' "$SOKUNET_ADMIN_SECRET" | npx wrangler secret put SOKUNET_ADMIN_SECRET
         env:
           SOKUNET_ROOM_SECRET: ${{ secrets.SOKUNET_ROOM_SECRET }}
+          SOKUNET_ADMIN_SECRET: ${{ secrets.SOKUNET_ADMIN_SECRET }}
