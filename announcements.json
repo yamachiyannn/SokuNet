@@ -1,15 +1,15 @@
 {
   "announcements": [
     {
-      "id": "20261124-003",
-      "title": "yamachiyannn",
-      "message": "リバサルミネス！"
+      "id": "20261125-001",
+      "title": "アプデ",
+      "message": "新バージョン出ました！",
     },
     {
-      "id": "20261124-004",
-      "title": "yamachiyannn",
-      "message": "右下のアイコンからリンクを開けます",
-      "url": "https://sokuboard.net/article/98"
+      "id": "20261125-002",
+      "title": "アプデ",
+      "message": "アイコン右クリからDLできます！",
+      "url": "https://github.com/yamachiyannn/SokuNet/releases/download/v2/sokunet.exe"
     }
   ]
 }
