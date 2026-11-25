@@ -124,7 +124,7 @@ function decodeBase64Utf8(value) {
 }
 
 function decodeAdminPasswordBase64(value) {
-  if (typeof value !== "string" || value.length > 2048) return null;
+  if (typeof value !== "string" || value.length > 512) return null;
   try {
     const binary = atob(value);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
@@ -178,7 +178,7 @@ function base64ToBytes(value) {
 async function encryptAdminFailureInput(password, adminSecret) {
   const key = await getAdminFailureLogKey(adminSecret, "encrypt");
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = new TextEncoder().encode(String(password).slice(0, 256));
+  const plaintext = new TextEncoder().encode(String(password).slice(0, 64));
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
   return {
     iv: bytesToBase64(iv),

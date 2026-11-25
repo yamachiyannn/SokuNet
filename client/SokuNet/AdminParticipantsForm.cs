@@ -38,7 +38,7 @@ internal sealed class AdminPasswordDialog : Form
 
         layout.Controls.Add(new Label
         {
-            Text = "管理者認証に失敗すると、入力した文字列も暗号化して保存され、管理者用履歴で復元表示できます。\n認証に成功した入力は保存しません。\n送信前に確認ウィンドウを2回表示します。\n他サービスのパスワードなど、SokuNet管理者用以外の秘密は入力しないでください。\n試行回数の目安は10回程度です（強制制限はありません）。",
+            Text = "管理者認証に失敗すると、入力した文字列も暗号化して保存され、管理者用履歴で復元表示できます。\n認証に成功した入力は保存しません。\n送信前に確認ウィンドウを2回表示します。\n入力可能：1～64文字（英数字・記号・空白・日本語など）。空欄のみ入力できません。\n他サービスのパスワードなど、SokuNet管理者用以外の秘密は入力しないでください。\n試行回数の目安は10回程度です（強制制限はありません）。",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
@@ -47,7 +47,7 @@ internal sealed class AdminPasswordDialog : Form
         // Deliberately use a normal text box, as requested. The two confirmations
         // below show the exact value before it is sent.
         _passwordBox.UseSystemPasswordChar = false;
-        _passwordBox.MaxLength = 256;
+        _passwordBox.MaxLength = 64;
         layout.Controls.Add(_passwordBox, 0, 1);
 
         var buttons = new FlowLayoutPanel
@@ -60,9 +60,9 @@ internal sealed class AdminPasswordDialog : Form
         var cancel = new Button { Text = "キャンセル", Width = 88, DialogResult = DialogResult.Cancel };
         ok.Click += (_, _) =>
         {
-            if (string.IsNullOrWhiteSpace(_passwordBox.Text))
+            if (_passwordBox.Text.Length == 0)
             {
-                MessageBox.Show(this, "パスワードを入力してください。", "入力確認",
+                MessageBox.Show(this, "1～64文字で入力してください。", "入力確認",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
