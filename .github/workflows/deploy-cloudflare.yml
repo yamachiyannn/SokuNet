@@ -32,8 +32,8 @@ jobs:
       - name: Validate the administrator secret
         shell: bash
         run: |
-          if [[ -z "$SOKUNET_ADMIN_SECRET" || ${#SOKUNET_ADMIN_SECRET} -lt 24 || ! "$SOKUNET_ADMIN_SECRET" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            echo "::error::SOKUNET_ADMIN_SECRET must be at least 24 ASCII letters, digits, hyphens, or underscores."
+          if [[ -z "$SOKUNET_ADMIN_SECRET" || ${#SOKUNET_ADMIN_SECRET} -lt 24 || ${#SOKUNET_ADMIN_SECRET} -gt 64 || ! "$SOKUNET_ADMIN_SECRET" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            echo "::error::SOKUNET_ADMIN_SECRET must be 24-64 ASCII letters, digits, hyphens, or underscores."
             exit 1
           fi
         env:
