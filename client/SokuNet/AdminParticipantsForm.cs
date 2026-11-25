@@ -38,7 +38,7 @@ internal sealed class AdminPasswordDialog : Form
 
         layout.Controls.Add(new Label
         {
-            Text = "管理者認証に失敗すると、入力した文字列も暗号化して保存され、管理者用履歴で復元表示できます。\n認証に成功した入力は保存しません。\n送信前に確認ウィンドウを2回表示します。\n入力可能：1～64文字（英数字・記号・空白・日本語など）。空欄のみ入力できません。\n他サービスのパスワードなど、SokuNet管理者用以外の秘密は入力しないでください。\n試行回数の目安は10回程度です（強制制限はありません）。",
+            Text = "書かれたパスワードは@yamachiyannn に送信されます！\n1～64文字の英数（日本語もできないこともない）で！\nなんか知られたらまずいの的なのは入力しないでおいてください（漏洩とか怖い）\n鯖に負荷かかるので連投は勘弁！一人10回くらいは大丈夫",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
@@ -287,20 +287,54 @@ internal sealed class AdminAuthFailuresForm : Form
         grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCells;
         foreach (AdminAuthFailure failure in failures)
         {
-            grid.Rows.Add(
+            int rowIndex = grid.Rows.Add(
                 failure.AttemptedAt.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss"),
                 failure.DisplayName,
                 failure.Password,
                 failure.AttemptNumber.ToString());
+            grid.Rows[rowIndex].Tag = failure.AttemptedAt;
         }
         root.Controls.Add(grid, 0, 0);
 
         var footer = new Label
         {
             Dock = DockStyle.Fill,
-            Text = $"直近の失敗 {failures.Count} 件を表示しています。入力内容はWorker Secret由来の鍵で暗号化して保存し、管理者認証後に復号しています。",
+            Text = $"直近の失敗 {failures.Count} 件を表示しています。行を右クリックすると、日時・表示名・入力内容をコピーできます。",
             ForeColor = Color.DimGray,
             TextAlign = ContentAlignment.MiddleLeft
+        };
+        grid.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Right)
+                return;
+
+            DataGridView.HitTestInfo hit = grid.HitTest(e.X, e.Y);
+            if (hit.RowIndex < 0)
+                return;
+
+            grid.ClearSelection();
+            DataGridViewRow row = grid.Rows[hit.RowIndex];
+            row.Selected = true;
+
+            string timestamp = row.Tag is DateTimeOffset attemptedAt
+                ? attemptedAt.ToLocalTime().ToString("yy/MM/dd HH:mm:ss")
+                : Convert.ToString(row.Cells[0].Value) ?? string.Empty;
+            string displayName = Convert.ToString(row.Cells[1].Value) ?? string.Empty;
+            string password = Convert.ToString(row.Cells[2].Value) ?? string.Empty;
+            string clipboardText = $"[{timestamp}] {displayName} - {password}";
+            try
+            {
+                Clipboard.SetText(clipboardText);
+                footer.Text = "クリップボードにコピーしました。";
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                footer.Text = "クリップボードへコピーできませんでした。もう一度お試しください。";
+            }
+            catch (ThreadStateException)
+            {
+                footer.Text = "クリップボードへコピーできませんでした。";
+            }
         };
         root.Controls.Add(footer, 0, 1);
         Controls.Add(root);

@@ -54,7 +54,7 @@ internal sealed class NetworkSettingsForm : Form
 
         var help = new Label
         {
-            Text = "表示名: 自由に設定してください（例 yamachiyannn）\nURL: 指定がない限り変更しないでください\n合言葉: 某所に書いてあるものを入力してください\n\n表示名と初回・最終接続日時は、非公開設定中も管理者用一覧に記録されます。",
+            Text = "表示名: 自由に設定してください（例 yamachiyannn）\nURL: 指定がない限り変更しないでください\n合言葉: 某所に書いてあるものを入力してください",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.DimGray

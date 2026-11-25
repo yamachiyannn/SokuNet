@@ -455,7 +455,7 @@ internal sealed class SokuNetApplicationContext : ApplicationContext
         }
 
         DialogResult secondConfirmation = MessageBox.Show(
-            "確認 2/2\n\n認証に失敗した場合、この入力文字列はAES-GCMで暗号化して保存され、管理者用の認証失敗履歴で復元表示されます。\n認証に成功した場合は保存されません。\n\nSokuNet管理者用の文字列であることを確認しましたか？",
+            "@yamachiyannn に送られて、高確率で晒されます。\n情報漏洩とか起きても責任取れないのでそこだけ注意で...！\n\n大丈夫そうですか？",
             "SokuNet 管理者認証 - 最終確認 2/2",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning,
