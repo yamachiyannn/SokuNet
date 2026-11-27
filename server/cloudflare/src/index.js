@@ -290,13 +290,9 @@ export class SokuNetRoom extends DurableObject {
       }
       ws.serializeAttachment(attachment);
 
-      // Only participants that completed the hello handshake take part in
-      // host/client election. Newly accepted sockets have an empty displayName
-      // until hello arrives; counting them can mislabel the sole registered
-      // participant as a client while the visible roster is still empty.
-      const entries = this.participantEntries();
+      const entries = this.sessionEntries();
       const peers = entries
-        .filter((entry) => entry.ws !== ws)
+        .filter((entry) => entry.ws !== ws && entry.attachment.displayName)
         .map((entry) => publicPresence(entry.attachment));
       const own = entries.find((entry) => entry.ws === ws);
       if (own) {
@@ -367,11 +363,11 @@ export class SokuNetRoom extends DurableObject {
     try { ws.serializeAttachment(attachment); } catch { }
     // A socket disconnected before hello was never in the friend roster.
     // Avoid emitting a synthetic "参加者 left" event for that handshake.
-    if (attachment.playerId && attachment.displayName) {
+    if (attachment.playerId) {
       this.broadcast({
         type: "peer_left",
         playerId: attachment.playerId,
-        displayName: attachment.displayName,
+        displayName: attachment.displayName || "参加者",
       }, ws);
     }
   }
@@ -565,7 +561,7 @@ export class SokuNetRoom extends DurableObject {
   }
 
   updateRoles(excluded = null) {
-    const entries = this.participantEntries(excluded);
+    const entries = this.sessionEntries(excluded);
     entries.forEach(({ ws, attachment }, index) => {
       const role = index === 0 ? "host" : "client";
       if (attachment.role !== role || attachment.roleIndex !== index) {
